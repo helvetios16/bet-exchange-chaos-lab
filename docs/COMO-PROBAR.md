@@ -20,6 +20,7 @@ mide el arranque, no el sistema.
 | **Docker Desktop, daemon corriendo** | kind levanta el cluster como contenedores |
 | **kind** (`brew install kind`) | crea el cluster local de 4 nodos |
 | `kubectl` | hablar con el cluster |
+| `helm` | instalar Traefik (`make traefik`, parte de `cluster-up`) |
 | `jq` | el autopilot lo usa para leer métricas |
 | `python3` | generar las semillas |
 | `make` | los objetivos del proyecto |
