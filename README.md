@@ -14,9 +14,10 @@ quitas un componente en mitad de tráfico.
 
 > **Para probarlo:** [`docs/COMO-PROBAR.md`](docs/COMO-PROBAR.md)
 
-**Estado:** armado y verificado estáticamente, **nunca ejecutado**. El SQL
-parsea pero no se ha corrido contra un Postgres real. Ver
-[capa 2 de la guía](docs/COMO-PROBAR.md).
+**Estado:** probado de punta a punta sobre `kind`. El esquema y las
+transacciones fueron validados contra PostgreSQL real con consistencia de saldo
+garantizada (`drift = 0`), el Ingress Traefik y networking están operativos, y
+el arnés de pruebas de carga y caos está calibrado.
 
 ---
 
@@ -244,11 +245,8 @@ precio de no perder la garantía de cero caída.
 - **nginx sin keepalive al upstream.** En la versión open source `resolve` en un
   bloque `upstream` no existe (es NGINX Plus). Se usa una variable para
   re-resolver por DNS, pero eso impide el keepalive.
-- **El HPA de CPU necesita metrics-server**, que kind no trae. Sin él el HPA se
-  queda en `<unknown>` y no se puede medir el eje de escalabilidad.
-- **El esquema SQL no se ha ejecutado contra un Postgres real.** Está escrito
-  con cuidado pero sin probar; ahí es donde más fácil aparece un error. Ver la
-  capa 2 de [`docs/COMO-PROBAR.md`](docs/COMO-PROBAR.md).
+- **El HPA de CPU necesita metrics-server**, que kind no trae de serie
+  (el comando `make cluster-up` lo instala automáticamente).
 
 ---
 

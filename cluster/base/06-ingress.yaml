@@ -26,6 +26,7 @@ metadata:
     # El anterior (kuber@kuber-middlewares) no resolvía y la ruta quedaba
     # huérfana.
     traefik.ingress.kubernetes.io/router.middlewares: >-
+      kuber-app-kuber-cors@kubernetescrd,
       kuber-app-kuber-ratelimit@kubernetescrd,
       kuber-app-kuber-inflight@kubernetescrd,
       kuber-app-kuber-retry@kubernetescrd,
@@ -42,9 +43,6 @@ metadata:
     cert-manager.io/cluster-issuer: letsencrypt-prod
 spec:
   ingressClassName: traefik
-  # Sin bloque tls: no hay cert-manager en el lab y el secreto kuber-tls no
-  # existe; declararlo hacía que Traefik marcara el router como erróneo.
-  # Todo el tráfico de prueba es http://...:8080 (entrypoint web).
   rules:
     - host: kuber.local
       http:
@@ -63,6 +61,42 @@ spec:
                 name: kuber-frontend
                 port:
                   number: 80
+    - http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: kuber-backend
+                port:
+                  number: 8080
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kuber-frontend
+                port:
+                  number: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: kuber-cors
+  namespace: kuber-app
+spec:
+  headers:
+    accessControlAllowMethods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    accessControlAllowOriginList:
+      - "*"
+    accessControlAllowHeaders:
+      - "*"
+    accessControlMaxAge: 100
+    addVaryHeader: true
 ---
 # Middlewares: límites de tasa y resiliencia a nivel de borde.
 # El rate limiting es lo que permite que las pruebas de estrés validen

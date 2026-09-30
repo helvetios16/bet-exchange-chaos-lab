@@ -21,6 +21,7 @@ from decimal import Decimal, ROUND_HALF_UP
 import psycopg
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 from psycopg_pool import AsyncConnectionPool, PoolTimeout
@@ -227,6 +228,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="kuber-backend", version="1.0.0", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # -----------------------------------------------------------------------------

@@ -64,7 +64,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "falta la dependencia '$1'"; }
 snapshot() {
   local tag="${1:-snapshot}"
   {
-    echo "===== $tag  $(date -Is) ====="
+    echo "===== $tag  $(date +%Y-%m-%dT%H:%M:%S%z) ====="
     echo "--- réplicas backend (spec vs ready) ---"
     kubectl -n "$NS_APP" get deploy "$BACKEND_DEPLOY" \
       -o custom-columns='NAME:.metadata.name,DESIRED:.spec.replicas,READY:.status.readyReplicas,UPDATED:.status.updatedReplicas' 2>/dev/null || true
@@ -400,7 +400,6 @@ chaos_test() {
 
     log "  restaurando el nodo…"
     kubectl uncordon "$node" >/dev/null 2>&1 || true
-    kubectl drain "$node" --ignore-daemonsets --delete-emptydir-data --timeout=180s >/dev/null 2>&1 || true
   else
     warn "2.3 omitido: no hay nodos etiquetados workload=app"
   fi
@@ -428,7 +427,7 @@ chaos_test() {
 # -----------------------------------------------------------------------------
 soak_test() {
   log "=== EJE 3: ENDURANCE (${SOAK_MINUTES} min a carga moderada) ==="
-  kubectl -n "$NS_OBS" scale deploy kuber-loadgen --replicas="$LOAD_PODS" >/dev/null 2>&1 || true
+  run_load_generator
   local dur=$((SOAK_MINUTES * 60))
   collect_load_metrics "$dur" "soak"
   kubectl -n "$NS_OBS" scale deploy kuber-loadgen --replicas=0 >/dev/null 2>&1 || true

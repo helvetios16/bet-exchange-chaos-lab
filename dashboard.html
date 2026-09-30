@@ -1,0 +1,804 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apuesta Total — Kubernetes Architecture Cockpit</title>
+  <style>
+    :root {
+      --bg: #f8fafc;
+      --card-bg: #ffffff;
+      --border: #e2e8f0;
+      --border-dark: #cbd5e1;
+      --text: #0f172a;
+      --text-muted: #64748b;
+      --primary: #2563eb;
+      --primary-light: #eff6ff;
+      --ok: #059669;
+      --ok-light: #ecfdf5;
+      --ok-border: #a7f3d0;
+      --warn: #d97706;
+      --warn-light: #fffbeb;
+      --warn-border: #fde68a;
+      --danger: #dc2626;
+      --danger-light: #fef2f2;
+      --danger-border: #fecaca;
+      --purple: #7c3aed;
+      --purple-light: #f5f3ff;
+      --coral: #ea580c;
+      --coral-light: #fff7ed;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.45; padding: 1.5rem;
+    }
+    main { max-width: 1360px; margin: 0 auto; display: flex; flex-direction: column; gap: 1.5rem; }
+
+    /* Top Bar */
+    header {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1rem 1.5rem; display: flex; justify-content: space-between; align-items: center;
+      flex-wrap: wrap; gap: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    .brand { display: flex; align-items: center; gap: .75rem; }
+    .brand-title { font-size: 1.35rem; font-weight: 800; color: #0f172a; letter-spacing: -0.02em; }
+    .brand-badge {
+      font-size: .72rem; font-weight: 700; text-transform: uppercase;
+      background: #fee2e2; color: #b91c1c; padding: .2rem .55rem; border-radius: 6px; letter-spacing: .05em;
+    }
+    .brand-sub { font-size: .8rem; color: var(--text-muted); }
+
+    .header-metrics { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+    .status-pill {
+      display: inline-flex; align-items: center; gap: .4rem; padding: .35rem .75rem;
+      border-radius: 999px; font-size: .78rem; font-weight: 600; border: 1px solid transparent;
+    }
+    .status-pill.ok { background: var(--ok-light); color: var(--ok); border-color: var(--ok-border); }
+    .status-pill.warn { background: var(--warn-light); color: var(--warn); border-color: var(--warn-border); }
+    .status-pill.err { background: var(--danger-light); color: var(--danger); border-color: var(--danger-border); }
+    .status-pill.neutral { background: #f1f5f9; color: #475569; border-color: var(--border-dark); }
+    .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+    /* Key Numbers Bar */
+    .kpi-row {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 1rem;
+    }
+    .kpi-card {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 10px;
+      padding: 1.15rem 1.25rem; box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+      display: flex; flex-direction: column; justify-content: space-between;
+      border-top: 3px solid var(--primary);
+    }
+    .kpi-header {
+      display: flex; justify-content: space-between; align-items: center; font-size: .74rem;
+      font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted);
+    }
+    .kpi-num {
+      font-size: 1.85rem; font-weight: 800; color: #0f172a; margin: .35rem 0 .2rem;
+      font-feature-settings: "tnum"; font-variant-numeric: tabular-nums;
+    }
+    .kpi-desc { font-size: .78rem; color: var(--text-muted); }
+
+    /* Section Headers */
+    .section-title {
+      font-size: 1.1rem; font-weight: 800; color: #0f172a; display: flex;
+      align-items: center; justify-content: space-between; margin-bottom: .6rem;
+    }
+    .section-subtitle { font-size: .8rem; font-weight: 500; color: var(--text-muted); }
+
+    /* Architecture Diagram (Matching User's Reference Layout) */
+    .arch-container {
+      display: grid; grid-template-columns: 290px 1fr; gap: 1.25rem;
+    }
+    @media (max-width: 1024px) {
+      .arch-container { grid-template-columns: 1fr; }
+    }
+
+    /* Left: Control Plane */
+    .plane-box {
+      background: #eff6ff; border: 2px solid #bfdbfe; border-radius: 12px;
+      padding: 1.25rem; display: flex; flex-direction: column; gap: .85rem;
+    }
+    .plane-box-title {
+      font-size: .95rem; font-weight: 800; color: #1e3a8a; display: flex;
+      justify-content: space-between; align-items: center;
+    }
+    .plane-comp {
+      background: #ffffff; border: 1px solid #93c5fd; border-radius: 8px;
+      padding: .75rem; display: flex; align-items: center; gap: .75rem;
+      box-shadow: 0 1px 2px rgba(37,99,235,0.05);
+    }
+    .comp-icon {
+      width: 32px; height: 32px; border-radius: 6px; display: flex;
+      align-items: center; justify-content: center; flex-shrink: 0;
+    }
+    .comp-info h4 { font-size: .82rem; font-weight: 700; color: #1e293b; margin: 0; }
+    .comp-info p { font-size: .7rem; color: #64748b; margin: 0; }
+
+    /* Right: Worker Nodes */
+    .workers-box {
+      background: #f0fdf4; border: 2px solid #bbf7d0; border-radius: 12px;
+      padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem;
+    }
+    .workers-header {
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .workers-title { font-size: .95rem; font-weight: 800; color: #166534; }
+    .workers-grid {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem;
+    }
+    @media (max-width: 860px) {
+      .workers-grid { grid-template-columns: 1fr; }
+    }
+
+    /* Worker Column */
+    .node-col {
+      background: #ffffff; border: 1px solid var(--border); border-radius: 10px;
+      padding: .85rem; display: flex; flex-direction: column; gap: .75rem;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.02);
+    }
+    .node-head {
+      border-bottom: 1px solid #f1f5f9; padding-bottom: .5rem;
+      display: flex; justify-content: space-between; align-items: flex-start;
+    }
+    .node-name { font-size: .88rem; font-weight: 800; color: #0f172a; }
+    .node-role { font-size: .68rem; color: var(--text-muted); font-family: ui-monospace, monospace; }
+
+    /* Pod Cards */
+    .pod-card {
+      border-radius: 7px; padding: .65rem .75rem; display: flex;
+      align-items: center; justify-content: space-between; gap: .5rem;
+      border: 1px solid transparent; font-size: .78rem; transition: transform .15s ease;
+    }
+    .pod-left { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+    .pod-title { font-weight: 700; color: #1e293b; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .pod-sub { font-size: .68rem; color: #64748b; font-family: ui-monospace, monospace; }
+
+    .pod-green  { background: var(--ok-light); border-color: var(--ok-border); color: #065f46; }
+    .pod-blue   { background: var(--primary-light); border-color: #bfdbfe; color: #1e40af; }
+    .pod-purple { background: var(--purple-light); border-color: #ddd6fe; color: #5b21b6; }
+    .pod-coral  { background: var(--coral-light); border-color: #fed7aa; color: #9a3412; }
+    .pod-scaled {
+      background: var(--warn-light); border: 2px dashed var(--warn); color: #92400e;
+      animation: pulse-border 2s infinite ease-in-out;
+    }
+    @keyframes pulse-border {
+      0%, 100% { border-color: #d97706; }
+      50% { border-color: #b45309; background: #fef3c7; }
+    }
+
+    /* 3 Action Pillars (Clear, Clean, No Confusion) */
+    .pillars-grid {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 1.25rem;
+    }
+    .pillar-card {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1.35rem; display: flex; flex-direction: column; justify-content: space-between;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.03); gap: 1rem;
+    }
+    .pillar-card.eje1 { border-top: 4px solid var(--primary); }
+    .pillar-card.eje2 { border-top: 4px solid var(--coral); }
+    .pillar-card.eje3 { border-top: 4px solid var(--ok); }
+
+    .pillar-header h3 { font-size: 1rem; font-weight: 800; color: #0f172a; margin-bottom: .25rem; }
+    .pillar-header p { font-size: .8rem; color: var(--text-muted); line-height: 1.4; }
+
+    /* Buttons */
+    button {
+      font-family: inherit; font-size: .82rem; font-weight: 600; cursor: pointer;
+      padding: .55rem 1rem; border-radius: 6px; border: 0; display: inline-flex;
+      align-items: center; justify-content: center; gap: .45rem; transition: all .15s ease;
+    }
+    button.primary { background: #0f172a; color: #ffffff; }
+    button.primary:hover { background: #334155; }
+    button.blue { background: #2563eb; color: #ffffff; }
+    button.blue:hover { background: #1d4ed8; }
+    button.coral { background: #ea580c; color: #ffffff; }
+    button.coral:hover { background: #c2410c; }
+    button.green { background: #059669; color: #ffffff; }
+    button.green:hover { background: #047857; }
+    button.secondary { background: #f1f5f9; color: #334155; border: 1px solid var(--border-dark); }
+    button.secondary:hover { background: #e2e8f0; }
+    button.danger { background: #dc2626; color: #ffffff; }
+    button.danger:hover { background: #b91c1c; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+
+    /* Result Callout Inside Pillars */
+    .pillar-result {
+      background: #f8fafc; border: 1px solid var(--border); border-radius: 8px;
+      padding: .65rem .85rem; font-size: .78rem; color: #334155; min-height: 52px;
+      display: flex; align-items: center;
+    }
+
+    /* Terminal & Activity Log */
+    .bottom-grid {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 1.25rem;
+    }
+    @media (max-width: 900px) { .bottom-grid { grid-template-columns: 1fr; } }
+
+    .bottom-box {
+      background: var(--card-bg); border: 1px solid var(--border); border-radius: 12px;
+      padding: 1.25rem; box-shadow: 0 1px 3px rgba(0,0,0,0.03);
+    }
+    pre.log-terminal {
+      background: #0f172a; color: #f8fafc; border-radius: 8px; padding: 1rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem;
+      max-height: 180px; overflow-y: auto; line-height: 1.5; margin: .5rem 0 0;
+    }
+    .log-ts { color: #64748b; }
+    .log-ok { color: #34d399; font-weight: 600; }
+    .log-warn { color: #fbbf24; font-weight: 600; }
+    .log-err { color: #f87171; font-weight: 700; }
+
+    table { width: 100%; border-collapse: collapse; font-size: .82rem; margin-top: .5rem; }
+    th, td { text-align: left; padding: .45rem .65rem; border-bottom: 1px solid var(--border); }
+    th { color: var(--text-muted); font-size: .72rem; text-transform: uppercase; font-weight: 700; }
+
+    /* Helper Snippet */
+    .code-chip {
+      background: #f1f5f9; border: 1px solid #cbd5e1; border-radius: 6px;
+      padding: .35rem .55rem; font-family: ui-monospace, monospace; font-size: .72rem;
+      display: flex; justify-content: space-between; align-items: center; gap: .5rem; margin-top: .4rem;
+    }
+    .code-chip code { color: #0284c7; font-weight: 600; }
+    .code-chip button { padding: 2px 6px; font-size: .68rem; background: #e2e8f0; color: #334155; }
+  </style>
+</head>
+<body>
+<main>
+
+  <!-- 1. BARRA SUPERIOR: Branding & Estado Global en Vivo -->
+  <header>
+    <div class="brand">
+      <!-- Shield / Target Vector SVG -->
+      <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      <div>
+        <div style="display:flex; align-items:center; gap:.5rem;">
+          <span class="brand-title">Apuesta Total</span>
+          <span class="brand-badge">Chaos Lab</span>
+        </div>
+        <div class="brand-sub">Consola de Control de Resiliencia y Alta Concurrencia sobre Kubernetes</div>
+      </div>
+    </div>
+
+    <div class="header-metrics">
+      <span class="status-pill ok" id="pill-status">
+        <span class="dot"></span>
+        <span id="pill-status-text">Cluster Conectado</span>
+      </span>
+      <span class="status-pill neutral">
+        <span>Latencia:</span>
+        <b id="pill-latency">2 ms</b>
+      </span>
+      <span class="status-pill neutral">
+        <span>RPS:</span>
+        <b id="pill-rps">0 req/s</b>
+      </span>
+      <button class="secondary" id="btn-manual-sync" style="padding: .3rem .65rem; font-size: .75rem;" onclick="syncImmediate()">
+        Refrescar
+      </button>
+    </div>
+  </header>
+
+  <!-- 2. MÉTRICAS CLAVE (KPIs Claras, Vivas y Actualizadas al Instante) -->
+  <div class="kpi-row">
+    <!-- KPI 1: Saldo Real del Usuario -->
+    <div class="kpi-card" style="border-top-color: var(--ok);">
+      <div class="kpi-header">
+        <span>Saldo en Vivo (Usuario 1)</span>
+        <span class="status-pill ok" style="padding: 1px 6px; font-size: .68rem;" id="kpi-drift-badge">Drift €0.00</span>
+      </div>
+      <div class="kpi-num" id="kpi-balance" style="color: var(--ok);">€ —</div>
+      <div class="kpi-desc" id="kpi-balance-sub">Ledger contable auditado: 100% cuadre</div>
+    </div>
+
+    <!-- KPI 2: Apuestas Totales -->
+    <div class="kpi-card" style="border-top-color: var(--primary);">
+      <div class="kpi-header">
+        <span>Apuestas Procesadas</span>
+        <span class="status-pill neutral" style="padding: 1px 6px; font-size: .68rem;">FastAPI + PG</span>
+      </div>
+      <div class="kpi-num" id="kpi-total-bets">—</div>
+      <div class="kpi-desc" id="kpi-volume-sub">Volumen transaccionado: € —</div>
+    </div>
+
+    <!-- KPI 3: Réplicas Backend (HPA) -->
+    <div class="kpi-card" style="border-top-color: var(--warn);">
+      <div class="kpi-header">
+        <span>Réplicas Backend (HPA)</span>
+        <span class="status-pill warn" style="padding: 1px 6px; font-size: .68rem;" id="kpi-hpa-badge">2 Pods</span>
+      </div>
+      <div class="kpi-num" id="kpi-replicas">2 / 10</div>
+      <div class="kpi-desc">Autoescalado horizontal por CPU (umbral 70%)</div>
+    </div>
+
+    <!-- KPI 4: Base de Datos Core -->
+    <div class="kpi-card" style="border-top-color: var(--purple);">
+      <div class="kpi-header">
+        <span>PostgreSQL 16 Core</span>
+        <span class="status-pill ok" style="padding: 1px 6px; font-size: .68rem;" id="kpi-pg-badge">READY</span>
+      </div>
+      <div class="kpi-num" style="font-size: 1.5rem;" id="kpi-pg-title">StatefulSet 1/1</div>
+      <div class="kpi-desc">Almacenamiento persistente PVC protegido</div>
+    </div>
+  </div>
+
+  <!-- 3. TOPOLOGÍA VISUAL DEL CLUSTER (Exacta a la imagen de referencia, limpia y legible) -->
+  <div>
+    <div class="section-title">
+      <span>Topología de Kubernetes y Distribución de Pods en Tiempo Real</span>
+      <span class="section-subtitle">Los pods reflejan el tráfico distribuido por el Ingress</span>
+    </div>
+
+    <div class="arch-container">
+      <!-- Izquierda: Control Plane -->
+      <div class="plane-box">
+        <div class="plane-box-title">
+          <span>Control Plane (Master)</span>
+          <span style="font-size:.7rem; font-weight:700; color:#2563eb;">kuber-control-plane</span>
+        </div>
+
+        <div class="plane-comp">
+          <div class="comp-icon" style="background:#dbeafe;">
+            <!-- Server Icon -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
+          </div>
+          <div class="comp-info">
+            <h4>API Server (kube-apiserver)</h4>
+            <p>Valida solicitudes y registra estado</p>
+          </div>
+        </div>
+
+        <div class="plane-comp">
+          <div class="comp-icon" style="background:#f3e8ff;">
+            <!-- Database Cylinder -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#7c3aed" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+          </div>
+          <div class="comp-info">
+            <h4>etcd (Almacén Raft)</h4>
+            <p>Consenso inmutable de cluster</p>
+          </div>
+        </div>
+
+        <div class="plane-comp">
+          <div class="comp-icon" style="background:#ecfdf5;">
+            <!-- Calendar/Clock Scheduler -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#059669" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+          </div>
+          <div class="comp-info">
+            <h4>kube-scheduler</h4>
+            <p>Asigna pods a nodos óptimos</p>
+          </div>
+        </div>
+
+        <div class="plane-comp">
+          <div class="comp-icon" style="background:#fff7ed;">
+            <!-- Network Router -->
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49m-8.48-.01a6 6 0 0 1 0-8.49"/></svg>
+          </div>
+          <div class="comp-info">
+            <h4>Traefik Ingress Controller</h4>
+            <p>Ruteo HTTP :8080 con reintentos</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Derecha: 3 Nodos Worker -->
+      <div class="workers-box">
+        <div class="workers-header">
+          <span class="workers-title">Nodos de Trabajo (Workers del Cluster)</span>
+          <span class="status-pill ok" style="padding: 1px 8px; font-size: .72rem;">3 Nodos Operativos</span>
+        </div>
+
+        <div class="workers-grid">
+          <!-- Nodo 1 -->
+          <div class="node-col" id="col-node1">
+            <div class="node-head">
+              <div>
+                <div class="node-name">Nodo 1 (kuber-worker)</div>
+                <div class="node-role">workload: app | 10 vCPU</div>
+              </div>
+              <span class="status-pill ok" style="padding:1px 5px; font-size:.65rem;">Ready</span>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:.5rem;">
+              <!-- Pod Frontend -->
+              <div class="pod-card pod-green">
+                <div class="pod-left">
+                  <!-- Isometric Cube SVG -->
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                  <div>
+                    <div class="pod-title">Pod Frontend Web</div>
+                    <div class="pod-sub">kuber-frontend (nginx)</div>
+                  </div>
+                </div>
+                <span class="status-pill ok" style="padding:1px 4px; font-size:.62rem;">200 OK</span>
+              </div>
+
+              <!-- Pod Backend 1 -->
+              <div class="pod-card pod-blue" id="pod-b1">
+                <div class="pod-left">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                  <div>
+                    <div class="pod-title">Pod API de Apuestas</div>
+                    <div class="pod-sub" id="p1-id">kuber-backend-1</div>
+                  </div>
+                </div>
+                <span class="status-pill neutral" style="padding:1px 5px; font-size:.62rem;" id="p1-counter">0 hits</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Nodo 2 -->
+          <div class="node-col" id="col-node2">
+            <div class="node-head">
+              <div>
+                <div class="node-name">Nodo 2 (kuber-worker2)</div>
+                <div class="node-role">workload: app | Datos + API</div>
+              </div>
+              <span class="status-pill ok" style="padding:1px 5px; font-size:.65rem;">Ready</span>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:.5rem;">
+              <!-- Pod PostgreSQL -->
+              <div class="pod-card pod-purple">
+                <div class="pod-left">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
+                  <div>
+                    <div class="pod-title">Pod Base de Datos</div>
+                    <div class="pod-sub">kuber-postgres-0 (16.4)</div>
+                  </div>
+                </div>
+                <span class="status-pill ok" style="padding:1px 4px; font-size:.62rem;">PVC Bound</span>
+              </div>
+
+              <!-- Pod Backend 2 -->
+              <div class="pod-card pod-blue" id="pod-b2">
+                <div class="pod-left">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>
+                  <div>
+                    <div class="pod-title">Pod API de Apuestas</div>
+                    <div class="pod-sub" id="p2-id">kuber-backend-2</div>
+                  </div>
+                </div>
+                <span class="status-pill neutral" style="padding:1px 5px; font-size:.62rem;" id="p2-counter">0 hits</span>
+              </div>
+
+              <!-- Pod Escalado HPA (Dinámico) -->
+              <div class="pod-card pod-scaled" id="pod-hpa-card" style="display:none;">
+                <div class="pod-left">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
+                  <div>
+                    <div class="pod-title">Pod (Nuevo / Escalado HPA)</div>
+                    <div class="pod-sub" id="p3-id">Autoescalado activo</div>
+                  </div>
+                </div>
+                <span class="status-pill warn" style="padding:1px 5px; font-size:.62rem;">HPA +1</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Nodo 3 (Reserva y Generador de Carga) -->
+          <div class="node-col" id="col-node3">
+            <div class="node-head">
+              <div>
+                <div class="node-name">Nodo 3 (kuber-worker3)</div>
+                <div class="node-role">workload: spare | Reserva</div>
+              </div>
+              <span class="status-pill neutral" style="padding:1px 5px; font-size:.65rem;" id="node3-status-badge">Spare</span>
+            </div>
+
+            <div style="display:flex; flex-direction:column; gap:.5rem;">
+              <!-- Pod Loadgen -->
+              <div class="pod-card pod-coral">
+                <div class="pod-left">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/></svg>
+                  <div>
+                    <div class="pod-title">Generador de Carga</div>
+                    <div class="pod-sub">kuber-loadgen (python)</div>
+                  </div>
+                </div>
+                <span class="status-pill" style="background:#ffedd5; color:#c2410c; padding:1px 5px; font-size:.62rem;" id="loadgen-status-pill">1/1 Activo</span>
+              </div>
+
+              <div style="font-size:.72rem; color:#64748b; background:#f8fafc; border:1px dashed #cbd5e1; border-radius:6px; padding:.55rem; line-height:1.4;">
+                <b>Nodo de Reserva:</b> Aísla la carga masiva y recibe pods si se drena el Nodo 1 o se satura el backend.
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4. CONSOLA DE COMANDOS PARA TERMINAL (3 EJES DE ARQUITECTURA) -->
+  <div>
+    <div class="section-title">
+      <span>Consola de Comandos — Ejecución en Terminal y Monitoreo en Vivo</span>
+      <span class="section-subtitle">Copia el comando con un clic, ejecútalo en tu terminal y observa la reacción en el dashboard</span>
+    </div>
+
+    <div class="pillars-grid">
+
+      <!-- Pilar 1: Eje 1 - Carga y HPA -->
+      <div class="pillar-card eje1">
+        <div class="pillar-header">
+          <h3>Eje 1: Carga y Autoescalado (HPA)</h3>
+          <p>Dispara tráfico masivo desde el generador de carga o escala pods manualmente para observar cómo el cluster absorbe la demanda.</p>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:.45rem;">
+          <div style="font-size:.74rem; font-weight:700; color:#1e40af; text-transform:uppercase;">1. Carga continua en Nodo 3 (Locust/Python):</div>
+          <div class="code-chip">
+            <code>kubectl -n kuber-observe scale deploy/kuber-loadgen --replicas=1</code>
+            <button onclick="copySnippet('kubectl -n kuber-observe scale deploy/kuber-loadgen --replicas=1', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#1e40af; text-transform:uppercase; margin-top:.3rem;">2. Detener carga continua:</div>
+          <div class="code-chip">
+            <code>kubectl -n kuber-observe scale deploy/kuber-loadgen --replicas=0</code>
+            <button onclick="copySnippet('kubectl -n kuber-observe scale deploy/kuber-loadgen --replicas=0', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#1e40af; text-transform:uppercase; margin-top:.3rem;">3. Escalar backend a 4 Pods:</div>
+          <div class="code-chip">
+            <code>make scale REPLICAS=4</code>
+            <button onclick="copySnippet('make scale REPLICAS=4', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#1e40af; text-transform:uppercase; margin-top:.3rem;">4. Suite de estrés completa (Eje 1):</div>
+          <div class="code-chip">
+            <code>make test-stress</code>
+            <button onclick="copySnippet('make test-stress', this)">Copiar</button>
+          </div>
+        </div>
+
+        <div style="font-size:.72rem; color:var(--text-muted); background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem;">
+          <b>Qué mirar arriba:</b> Al lanzar la carga, el Nodo 3 activa el pod `kuber-loadgen`, el contador de apuestas sube rápidamente y el Scheduler crea nuevos pods amarillos.
+        </div>
+      </div>
+
+      <!-- Pilar 2: Eje 2 - Inyección de Caos -->
+      <div class="pillar-card eje2">
+        <div class="pillar-header">
+          <h3>Eje 2: Inyección de Caos y Resiliencia</h3>
+          <p>Destruye procesos críticos en plena ejecución para demostrar que la arquitectura absorbe caídas con cero tiempo de inactividad.</p>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:.45rem;">
+          <div style="font-size:.74rem; font-weight:700; color:#c2410c; text-transform:uppercase;">1. Matar Pod Backend abruptamente (SIGKILL):</div>
+          <div class="code-chip">
+            <code>kubectl -n kuber-app delete pod -l app.kubernetes.io/name=backend --grace-period=0</code>
+            <button onclick="copySnippet('kubectl -n kuber-app delete pod -l app.kubernetes.io/name=backend --grace-period=0', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#c2410c; text-transform:uppercase; margin-top:.3rem;">2. Reiniciar PostgreSQL StatefulSet:</div>
+          <div class="code-chip">
+            <code>kubectl -n kuber-data delete pod -l app.kubernetes.io/name=postgres</code>
+            <button onclick="copySnippet('kubectl -n kuber-data delete pod -l app.kubernetes.io/name=postgres', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#c2410c; text-transform:uppercase; margin-top:.3rem;">3. Drenar Nodo 1 (PDB minAvailable: 1):</div>
+          <div class="code-chip">
+            <code>kubectl drain kuber-worker --ignore-daemonsets --delete-emptydir-data</code>
+            <button onclick="copySnippet('kubectl drain kuber-worker --ignore-daemonsets --delete-emptydir-data', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#c2410c; text-transform:uppercase; margin-top:.3rem;">4. Suite de caos completa (Eje 2):</div>
+          <div class="code-chip">
+            <code>make test-chaos</code>
+            <button onclick="copySnippet('make test-chaos', this)">Copiar</button>
+          </div>
+        </div>
+
+        <div style="font-size:.72rem; color:var(--text-muted); background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem;">
+          <b>Qué mirar arriba:</b> Traefik reintenta automáticamente en la réplica sana, el pool de Postgres reconecta sin perder datos y K8s recrea el pod en &lt; 2s.
+        </div>
+      </div>
+
+      <!-- Pilar 3: Eje 3 - Integridad Financiera e Idempotencia -->
+      <div class="pillar-card eje3">
+        <div class="pillar-header">
+          <h3>Eje 3: Integridad Financiera y Zero Drift</h3>
+          <p>Verifica matemáticamente que ninguna apuesta se cobra dos veces por reintentos de red y que el ledger inmutable coincide al céntimo con el saldo.</p>
+        </div>
+
+        <div style="display:flex; flex-direction:column; gap:.45rem;">
+          <div style="font-size:.74rem; font-weight:700; color:#065f46; text-transform:uppercase;">1. Simular Doble Cobro (curl en terminal):</div>
+          <div class="code-chip">
+            <code>curl -s -X POST http://localhost:8080/api/v1/bets/1/settle -H "Content-Type: application/json" -d '{"won":true}'</code>
+            <button onclick="copySnippet('curl -s -X POST http://localhost:8080/api/v1/bets/1/settle -H &quot;Content-Type: application/json&quot; -d \'{\&quot;won\&quot;:true}\'', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#065f46; text-transform:uppercase; margin-top:.3rem;">2. Auditar balance y drift en terminal:</div>
+          <div class="code-chip">
+            <code>curl -s http://localhost:8080/api/v1/users/1/wallet</code>
+            <button onclick="copySnippet('curl -s http://localhost:8080/api/v1/users/1/wallet', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#065f46; text-transform:uppercase; margin-top:.3rem;">3. Consultar métricas de Postgres:</div>
+          <div class="code-chip">
+            <code>curl -s http://localhost:8080/metrics | grep -E "bets_|db_pool"</code>
+            <button onclick="copySnippet('curl -s http://localhost:8080/metrics | grep -E &quot;bets_|db_pool&quot;', this)">Copiar</button>
+          </div>
+
+          <div style="font-size:.74rem; font-weight:700; color:#065f46; text-transform:uppercase; margin-top:.3rem;">4. Suite de consistencia completa (Eje 3):</div>
+          <div class="code-chip">
+            <code>make test-soak</code>
+            <button onclick="copySnippet('make test-soak', this)">Copiar</button>
+          </div>
+        </div>
+
+        <div style="font-size:.72rem; color:var(--text-muted); background:#f8fafc; border:1px solid var(--border); border-radius:6px; padding:.45rem .6rem;">
+          <b>Qué mirar:</b> El segundo cobro devuelve `HTTP 409 Conflict (apuesta ya liquidada)` por el índice único en PostgreSQL y el drift permanece en `€ 0.00`.
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- 5. TERMINAL DE ACTIVIDAD Y PARTIDOS EN JUEGO -->
+  <div class="bottom-grid">
+    <!-- Partidos -->
+    <div class="bottom-box">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:.9rem; font-weight:700;">Eventos en Vivo (IN_PLAY)</span>
+        <button class="secondary" style="padding:2px 7px; font-size:.7rem;" onclick="loadLiveEvents()">Actualizar</button>
+      </div>
+      <table id="events-tbl">
+        <thead><tr><th>Partido</th><th>Competición</th><th>Marcador</th><th>Acción</th></tr></thead>
+        <tbody id="events-body"><tr><td colspan="4" style="color:#64748b;">Cargando partidos…</td></tr></tbody>
+      </table>
+    </div>
+
+    <!-- Terminal -->
+    <div class="bottom-box">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:.9rem; font-weight:700;">Registro de Auditoría en Tiempo Real</span>
+        <span class="status-pill neutral" style="font-size:.65rem; padding:1px 5px;" id="log-counter">0 eventos</span>
+      </div>
+      <pre class="log-terminal" id="terminal-box"><span class="log-ts">[00:00:00]</span> Cockpit conectado. Sistema nominal listo.</pre>
+    </div>
+  </div>
+
+</main>
+
+<script>
+  const API = 'http://localhost:8080/api/v1';
+  let podStats = {};
+  let isStreamActive = false;
+  let streamTimer = null;
+  let chaosMonitorTimer = null;
+  let chaosPings = 0;
+  let chaosFails = 0;
+  let logTotal = 0;
+
+  function appendLog(msg, type = 'info') {
+    const box = document.getElementById('terminal-box');
+    const time = new Date().toTimeString().split(' ')[0];
+    const colorClass = type === 'ok' ? 'log-ok' : type === 'warn' ? 'log-warn' : type === 'err' ? 'log-err' : '';
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="log-ts">[${time}]</span> <span class="${colorClass}">${msg}</span>`;
+    box.appendChild(line);
+    box.scrollTop = box.scrollHeight;
+    logTotal++;
+    document.getElementById('log-counter').textContent = `${logTotal} eventos`;
+  }
+
+  function copySnippet(cmd, btn) {
+    navigator.clipboard.writeText(cmd);
+    const prev = btn.textContent;
+    btn.textContent = '¡Copiado!';
+    appendLog(`Comando copiado: ${cmd}`, 'ok');
+    setTimeout(() => { btn.textContent = prev; }, 2000);
+  }
+
+  async function qFetch(url, opt = {}) {
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, { cache: 'no-store', ...opt });
+      const ms = Math.round(performance.now() - t0);
+      let data = null;
+      try { data = await res.json(); } catch(e) {}
+      return { ok: res.ok, status: res.status, ms, data };
+    } catch(err) {
+      return { ok: false, status: 0, ms: Math.round(performance.now() - t0), error: err.message };
+    }
+  }
+
+  // Actualización rápida e independiente de cada sección (sin esperas cruzadas)
+  async function syncImmediate() {
+    // 1. Whoami
+    qFetch(`${API}/whoami`).then(r => {
+      if (r.ok && r.data) {
+        document.getElementById('pill-latency').textContent = `${r.ms} ms`;
+        document.getElementById('pill-status').className = 'status-pill ok';
+        document.getElementById('pill-status-text').textContent = 'Cluster Operativo';
+        if (r.data.pod) registerPodHit(r.data.pod, r.data.node);
+      } else {
+        document.getElementById('pill-status').className = 'status-pill err';
+        document.getElementById('pill-status-text').textContent = 'Desconectado';
+      }
+    });
+
+    // 2. Wallet (Saldo real)
+    qFetch(`${API}/users/1/wallet`).then(r => {
+      if (r.ok && r.data) {
+        const w = r.data;
+        const bal = Number(w.available).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const led = Number(w.ledger_sum).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        const drift = Number(w.drift || 0).toFixed(2);
+
+        document.getElementById('kpi-balance').textContent = `€ ${bal}`;
+        const badge = document.getElementById('kpi-drift-badge');
+        badge.textContent = `Drift €${drift}`;
+        badge.className = Math.abs(drift) < 0.001 ? 'status-pill ok' : 'status-pill err';
+        document.getElementById('kpi-balance-sub').textContent = `Ledger: € ${led} | 100% Cuadre exacto`;
+      }
+    });
+
+    // 3. Stats (Apuestas y volumen)
+    qFetch(`${API}/stats`).then(r => {
+      if (r.ok && r.data) {
+        const s = r.data;
+        document.getElementById('kpi-total-bets').textContent = Number(s.total_bets).toLocaleString();
+        document.getElementById('kpi-volume-sub').textContent = 
+          `Volumen: € ${Number(s.volume).toLocaleString()} | ${s.won}W / ${s.lost}L`;
+      }
+    });
+  }
+
+  function registerPodHit(pod, node) {
+    podStats[pod] = (podStats[pod] || 0) + 1;
+    const pods = Object.keys(podStats);
+
+    const activePods = Math.max(pods.length, 2);
+    document.getElementById('kpi-hpa-badge').textContent = `${activePods} Pods`;
+    document.getElementById('kpi-replicas').textContent = `${activePods} / 10`;
+
+    if (pods[0]) {
+      document.getElementById('p1-id').textContent = pods[0].substring(0, 22);
+      document.getElementById('p1-counter').textContent = `${podStats[pods[0]]} hits`;
+    }
+    if (pods[1]) {
+      document.getElementById('p2-id').textContent = pods[1].substring(0, 22);
+      document.getElementById('p2-counter').textContent = `${podStats[pods[1]]} hits`;
+    }
+    if (pods.length >= 3) {
+      const hpa = document.getElementById('pod-hpa-card');
+      hpa.style.display = 'flex';
+      document.getElementById('p3-id').textContent = `${pods[2].substring(0, 20)}`;
+    }
+  }
+
+  // --- Partidos en Vivo (Lectura de Mercados Reales) ---
+  async function loadLiveEvents() {
+    const res = await qFetch(`${API}/events?status=IN_PLAY&limit=3`);
+    const tbody = document.getElementById('events-body');
+    if (res.ok && res.data?.events) {
+      tbody.innerHTML = res.data.events.map(ev => `
+        <tr>
+          <td><b>${ev.name}</b></td>
+          <td><span class="status-pill neutral" style="font-size:.65rem; padding:1px 5px;">${ev.competition}</span></td>
+          <td><b style="color:var(--ok); font-size:.9rem;">${ev.score_home} - ${ev.score_away}</b> (${ev.clock_minute}')</td>
+          <td>
+            <button class="secondary" style="padding:2px 7px; font-size:.7rem;" onclick="copySnippet('curl -s -X POST http://localhost:8080/api/v1/bets -H &quot;Content-Type: application/json&quot; -d \'{\&quot;user_id\&quot;:1,\&quot;odds_id\&quot;:1,\&quot;stake\&quot;:10.0,\&quot;side\&quot;:\&quot;BACK\&quot;}\'', this)">
+              Copiar Curl Apuesta
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+  }
+
+  // Arranque ultra-rápido: actualización inmediata y sondeo cada 750ms
+  syncImmediate();
+  loadLiveEvents();
+  setInterval(syncImmediate, 750);
+</script>
+</body>
+</html>

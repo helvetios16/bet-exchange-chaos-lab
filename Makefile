@@ -217,6 +217,11 @@ status: ## Estado de deployments, HPA, pods y endpoints
 	@echo
 	@echo "URL: http://localhost:8080  (frontend)"
 	@echo "     http://localhost:8080/api/v1/whoami  (backend)"
+	@echo "     make dashboard  (dashboard HTML interactivo)"
+
+.PHONY: dashboard
+dashboard: ## Abre el dashboard interactivo HTML en tu navegador
+	@open dashboard.html
 
 .PHONY: logs
 logs: ## Sigue los logs del backend
