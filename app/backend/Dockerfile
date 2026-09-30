@@ -23,7 +23,7 @@ RUN apt-get update \
  && apt-get install -y --no-install-recommends ca-certificates curl \
  && rm -rf /var/lib/apt/lists/* \
  && groupadd -g 10001 kuber \
- && useradd -u 10001 -g 10001 -m -s /sbin/nologin -M kuber
+ && useradd -u 10001 -g 10001 -m -s /sbin/nologin kuber
 
 COPY --from=deps /install /usr/local
 

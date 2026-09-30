@@ -14,6 +14,7 @@ KUBECTL  ?= kubectl
 KIND_VERSION     ?= v0.24.0
 K8S_VERSION      ?= v1.31.2
 METRICS_SERVER_VERSION ?= v0.7.2
+TRAEFIK_CHART_VERSION ?= 33.2.1
 POSTGRES_IMAGE   ?= postgres:16.4-alpine
 
 .PHONY: help
@@ -26,7 +27,7 @@ help: ## Muestra esta ayuda
 # -----------------------------------------------------------------------------
 .PHONY: check
 check: ## Verifica que están las dependencias del entorno
-	@for c in kubectl kind docker jq curl; do \
+	@for c in kubectl kind docker jq curl helm; do \
 	  command -v $$c >/dev/null 2>&1 && echo "  OK      $$c" || echo "  FALTA   $$c"; \
 	done
 	@command -v docker >/dev/null 2>&1 && \
@@ -40,7 +41,9 @@ check: ## Verifica que están las dependencias del entorno
 cluster-up: check ## Crea el cluster de 4 nodos con kind
 	kind create cluster --config cluster/kind-config.yaml --wait 120s
 	$(MAKE) metrics-server
+	$(MAKE) images-build
 	$(MAKE) images-load
+	$(MAKE) traefik
 	$(MAKE) deploy
 
 .PHONY: cluster-down
@@ -58,6 +61,29 @@ metrics-server: ## Instala metrics-server (necesario para el HPA de CPU/memoria)
 	  -p='[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 	@echo "    (--kubelet-insecure-tls es necesario en kind: los certificados del"
 	@echo "     kubelet son autofirmados y metrics-server los rechaza sin él)"
+
+.PHONY: traefik
+traefik: ## Instala Traefik (ingress + CRDs) vía Helm en el namespace traefik
+	@echo "==> traefik chart $(TRAEFIK_CHART_VERSION)"
+	@echo "    (kind no trae ningún ingress de serie: sin esto el Ingress y"
+	@echo "     los Middleware de 06-ingress.yaml no existen y nada enruta)"
+	@helm repo add traefik https://traefik.github.io/charts >/dev/null 2>&1 || true
+	@helm repo update >/dev/null 2>&1 || true
+	@helm upgrade --install traefik traefik/traefik \
+	  --version $(TRAEFIK_CHART_VERSION) \
+	  --namespace traefik --create-namespace \
+	  --set ports.web.hostPort=80 \
+	  --set ports.websecure.hostPort=443 \
+	  --set-string nodeSelector.ingress-ready=true \
+	  --set 'tolerations[0].key=node-role.kubernetes.io/control-plane' \
+	  --set 'tolerations[0].operator=Exists' \
+	  --set 'tolerations[0].effect=NoSchedule' \
+	  --wait --timeout 180s
+	@echo "    (hostPorts 80/443 en el control-plane, que kind publica en"
+	@echo "     localhost:8080/8443 vía extraPortMappings. El nodeSelector y"
+	@echo "     la tolerancia fijan Traefik al control-plane: es el único"
+	@echo "     nodo con esos puertos. Las NetworkPolicy de 04-backend.yaml"
+	@echo "     permiten el namespace traefik a juego)"
 
 # -----------------------------------------------------------------------------
 # Imágenes
@@ -160,9 +186,11 @@ seeds-check: ## Verifica que el generador es determinista
 
 .PHONY: seeds-data
 seeds-data: seeds ## Genera las semillas y las publica como ConfigMap
-	@$(KUBECTL) -n kuber-app create configmap kuber-seed-data \
-	  --from-file=seeds/ \
-	  --dry-run=client -o yaml | $(KUBECTL) apply -f -
+	@# NOTA: delete + create en vez de `apply`. El dataset (~300 KB) supera el
+	@# límite de 256 KiB de la anotación last-applied-configuration que `apply`
+	@# añade, y el API server lo rechaza. `create` no guarda esa anotación.
+	@$(KUBECTL) -n kuber-app delete configmap kuber-seed-data --ignore-not-found
+	@$(KUBECTL) -n kuber-app create configmap kuber-seed-data --from-file=seeds/
 	@echo "semillas publicadas. reinicia el backend con: make restart-backend"
 
 .PHONY: restart-backend
@@ -250,7 +278,8 @@ validate: ## Valida los manifiestos contra el esquema real del API server
 	@echo "todos los manifiestos son válidos contra el esquema del API server"
 	@echo
 	@echo "Nota: el Middleware de Traefik es un CRD. Se valida en el servidor, pero"
-	@echo "solo si el CRD está instalado. Si no lo está, kind lo trae de serie."
+	@echo "solo si el CRD está instalado. Lo instala 'make traefik' (parte de"
+	@echo "cluster-up): kind no trae ningún ingress de serie."
 
 # -----------------------------------------------------------------------------
 # Utilidades

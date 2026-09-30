@@ -19,15 +19,12 @@ nodes:
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "ingress-ready=true,topology.kubernetes.io/zone=us-east-1a"
-      - |
-        kind: ClusterConfiguration
-        apiServer:
-          extraArgs:
-            # Necesario para que las pruebas de resiliencia midan bien el
-            # impacto de reinicios del API server.
-            service-node-port-range: "30000-32767"
+    # ingress-ready: `make traefik` fija Traefik a este nodo vía nodeSelector
+    # (es el único con los puertos 80/443 mapeados al host). Las NetworkPolicy
+    # de 04-backend.yaml permiten el namespace `traefik`: las dos piezas van
+    # a juego o el ingress no llega al backend (default-deny).
     extraPortMappings:
-      # Ingress (traefik) -> localhost:8080
+      # Ingress (traefik, namespace `traefik`) -> localhost:8080
       - containerPort: 80
         hostPort: 8080
         protocol: TCP
@@ -49,11 +46,6 @@ nodes:
         nodeRegistration:
           kubeletExtraArgs:
             node-labels: "workload=app"
-      - |
-        kind: ClusterConfiguration
-        apiServer:
-          extraArgs:
-            service-node-port-range: "30000-32767"
 
   # -----------------------------------------------------------------------------
   # Worker 2 — existe para que las pruebas de tolerancia a fallos tengan
@@ -90,29 +82,11 @@ networking:
   disableDefaultCNI: false
 
 # -----------------------------------------------------------------------------
-# Kubelet: importante para las pruebas de esfuerzo. Con los defaults de kind
-# el kubelet es muy conservador y el HPA de CPU nunca se dispara porque los
-# requests son bajos respecto a los limites.
+# NOTA: sin kubeadmConfigPatches de ClusterConfiguration/KubeletConfiguration.
+# - service-node-port-range 30000-32767 ya es el default de kind: el patch era
+#   un no-op.
+# - El bloque KubeletConfiguration iba sin apiVersion y con evictionHard que
+#   kubeadm rechaza: el kubelet no arrancaba, el apiserver (static pod) nunca
+#   subía y `kubeadm init` moría en wait-control-plane. Verificado con
+#   kind v0.24.0 y v0.33.0.
 # -----------------------------------------------------------------------------
-kubeadmConfigPatches:
-  - |
-    kind: ClusterConfiguration
-    apiServer:
-      extraArgs:
-        service-node-port-range: "30000-32767"
-  - |
-    kind: KubeletConfiguration
-    # Mas headroom de CPU para que el HPA tenga margen de maniobra
-    cpuManagerPolicy: none
-    # Evitar que el kubelet mate pods antes que el HPA pueda escalar
-    evictionHard:
-      memory.available: "100Mi"
-      nodefs.available: "10%"
-      imagefs.available: "15%"
-    evictionSoft:
-      memory.available: "200Mi"
-      nodefs.available: "20%"
-      imagefs.available: "30%"
-    serializeImagePulls: false
-    imageGCHighThresholdPercent: 70
-    imageGCLowThresholdPercent: 50

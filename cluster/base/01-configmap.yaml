@@ -13,16 +13,24 @@ data:
   LOG_FORMAT: "json"
   API_PREFIX: "/api/v1"
   # Pool de conexiones a Postgres
+  # Dimensionado contra HPA maxReplicas (10) × POOL_MAX <= max_connections
+  # (200). Con 20, a tope de escala el pool pide 200 y no queda ni una para
+  # psql/admin: "too many clients" en plena prueba. Con 10 hay 100 de margen.
   DB_POOL_MIN: "2"
-  DB_POOL_MAX: "20"
+  DB_POOL_MAX: "10"
   DB_CONNECT_TIMEOUT_MS: "3000"
   DB_STATEMENT_TIMEOUT_MS: "5000"
   # Circuit breaker hacia la BD
   DB_CIRCUIT_FAIL_THRESHOLD: "5"
   DB_CIRCUIT_RESET_SECONDS: "30"
   # Rate limiting por IP (para las pruebas de estres poder validar 429)
+  # OJO con la matemática: el backend ve la IP del pod FRONTEND (nginx
+  # proxea), no la del cliente. Con 200/60s serían ~3 RPS por pod frontend
+  # y ningún test de carga pasaría limpio jamás. 12000/60s = 200 RPS por
+  # IP de frontend deja margen para el estrés; el 429 de borde lo siguen
+  # dando nginx (50 r/s por IP) y Traefik (rateLimit 200avg/400burst).
   RATE_LIMIT_ENABLED: "true"
-  RATE_LIMIT_REQUESTS: "200"
+  RATE_LIMIT_REQUESTS: "12000"
   RATE_LIMIT_WINDOW_SECONDS: "60"
   # Cache
   CACHE_TTL_SECONDS: "60"

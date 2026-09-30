@@ -354,11 +354,12 @@ spec:
     - Egress
   ingress:
     # Solo el Ingress controller (traefik) y el pod de carga pueden hablar
-    # con el frontend. traefik corre en kube-system.
+    # con el frontend. traefik corre en el namespace `traefik` (instalación
+    # vía Helm chart oficial; kind no trae ningún ingress de serie).
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: traefik
           podSelector:
             matchLabels:
               app.kubernetes.io/name: traefik
@@ -416,7 +417,7 @@ spec:
     - from:
         - namespaceSelector:
             matchLabels:
-              kubernetes.io/metadata.name: kube-system
+              kubernetes.io/metadata.name: traefik
           podSelector:
             matchLabels:
               app.kubernetes.io/name: traefik

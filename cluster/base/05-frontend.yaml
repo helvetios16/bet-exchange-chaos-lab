@@ -49,8 +49,12 @@ spec:
         app.kubernetes.io/name: frontend
         app.kubernetes.io/component: web
       annotations:
+        # OJO: stub_status (/nginx_status en el puerto http) NO es formato
+        # Prometheus: un scrape real lo intenta pero no parsea nada. Para
+        # métricas de verdad haría falta un exporter (p. ej. nginx-prometheus).
+        # El puerto es el http (8080): nada escucha en el 9113.
         prometheus.io/scrape: "true"
-        prometheus.io/port: "9113"
+        prometheus.io/port: "8080"
         prometheus.io/path: "/nginx_status"
     spec:
       terminationGracePeriodSeconds: 30
@@ -77,9 +81,6 @@ spec:
           ports:
             - name: http
               containerPort: 8080
-              protocol: TCP
-            - name: metrics
-              containerPort: 9113
               protocol: TCP
           env:
             - name: BACKEND_URL
