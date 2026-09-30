@@ -1,14 +1,45 @@
-# kuber
+# bet-exchange-chaos-lab
 
 Entorno de laboratorio de **Apuesta Total (simulado)** sobre Kubernetes, para
 observar cómo se comporta un exchange de apuestas ante **carga alta** y **fallos**.
 
+> **SIMULADO.** No es el producto real ni un clon suyo. Los datos son sintéticos
+> y los nombres de clubes y usuarios se generan por combinación. No hay
+> apuestas ni dinero reales.
+
 No es un clon del producto. Es un sistema que **se comporta como si lo fuera**:
-misma topología, mismos servicios, mismas condiciones de operación, datos
-sintéticos. El valor está en que el sistema se sostiene, o se rompe de forma
-interesante, cuando le quitas un componente en mitad de tráfico.
+misma topología, mismos servicios, mismas condiciones de operación. El valor
+está en que el sistema se sostiene, o se rompe de forma interesante, cuando le
+quitas un componente en mitad de tráfico.
 
 > **Para probarlo:** [`docs/COMO-PROBAR.md`](docs/COMO-PROBAR.md)
+
+**Estado:** armado y verificado estáticamente, **nunca ejecutado**. El SQL
+parsea pero no se ha corrido contra un Postgres real. Ver
+[capa 2 de la guía](docs/COMO-PROBAR.md).
+
+---
+
+## Arranque rápido
+
+```bash
+make check         # qué falta (Docker corriendo, kind instalado, 8 GB de RAM)
+make cluster-up    # crea el cluster, instala métricas, despliega todo
+make status        # ¿todo Ready?
+open http://localhost:8080
+```
+
+Después, para cargar:
+
+```bash
+make seeds         # dataset sintético determinista
+make seeds-check   # verifica que dos ejecuciones dan lo mismo
+make test-stress   # escalabilidad bajo carga
+make test-chaos    # tolerancia a fallos
+```
+
+Los requisitos y las seis capas de prueba están en
+[`docs/COMO-PROBAR.md`](docs/COMO-PROBAR.md).
 
 ---
 
@@ -27,6 +58,19 @@ Lo que se demuestra:
 | **Escalabilidad** | ¿El sistema aguanta el equivalente a un inicio de partido con picos? |
 | **Pruebas de estrés** | ¿Dónde está el techo real, y es el backend o la base de datos? |
 | **Tolerancia a fallos** | Si un servicio se cae, ¿se degrada o se cae entero? |
+
+### Los fallos que duelen de verdad
+
+Un experimento de caos genérico no prueba gran cosa. Estos son los escenarios
+que sí importan en un exchange, y los que el proyecto mide:
+
+| Escenario | Qué demuestra |
+|---|---|
+| **Caída del servicio de pagos** | Degradación parcial, no caída total |
+| **Liquidación reintentada** | Idempotencia: el usuario no cobra dos veces |
+| **Saldo vs ledger** | Que no se pierde ni se inventa dinero bajo carga |
+| **Notificaciones retrasadas** | Que el core no depende de los servicios no críticos |
+| **Ráfaga en inicio de partido** | Escalado y límite de la base de datos |
 
 ---
 
@@ -239,3 +283,15 @@ docs/
   COMO-PROBAR.md              guía de pruebas
 Makefile
 ```
+
+---
+
+## Aviso
+
+Este proyecto es un **simulador con fines de aprendizaje**. No está afiliado a
+ninguna casa de apuestas. Los nombres de clubes, competiciones y usuarios se
+generan por combinación a partir de un vocabulario y **no corresponden a
+entidades ni participantes reales**. Los precios, partidos y resultados son
+inventados.
+
+Las cuotas generadas no tienen valor predictivo ni reflejan ningún mercado real.
