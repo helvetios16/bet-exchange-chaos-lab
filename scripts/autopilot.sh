@@ -25,7 +25,11 @@ NS_DATA="${NS_DATA:-kuber-data}"
 NS_OBS="${NS_OBS:-kuber-observe}"
 TARGET="${TARGET:-http://localhost:8080}"
 API="${TARGET}/api/v1"
-LOAD_PODS="${LOAD_PODS:-2}"
+LOAD_PODS="${LOAD_PODS:-4}"
+# Regla práctica: el nginx de borde limita a ~50 r/s por IP de origen y cada
+# pod loadgen es una IP. Para tráfico limpio, MAX_RPS ≈ 50 × LOAD_PODS
+# (p. ej. 200 RPS con 4 pods). Por encima de eso medirás el 429 de nginx,
+# que también es una medición válida, pero distinta.
 RAMP_SECONDS="${RAMP_SECONDS:-180}"
 SOAK_MINUTES="${SOAK_MINUTES:-30}"
 BACKEND_HPA="${BACKEND_HPA:-kuber-backend-hpa}"
@@ -87,9 +91,12 @@ hpa_replicas() {
 
 # curl con timeout curto, para que un sistema que se cuelga no bloquee el test.
 # Devuelve: "http_code segundos"
+# Header Host: el Ingress solo enruta el host kuber.local; sin él Traefik
+# devuelve 404 y los escenarios medirían el 404, no el sistema.
 probe() {
   local url="$1" timeout="${2:-5}"
-  curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time "$timeout" "$url" 2>/dev/null || echo "000 99.0"
+  curl -s -o /dev/null -w '%{http_code} %{time_total}' --max-time "$timeout" \
+    -H "Host: kuber.local" "$url" 2>/dev/null || echo "000 99.0"
 }
 
 # -----------------------------------------------------------------------------
@@ -142,6 +149,12 @@ run_load_generator() {
   kubectl -n "$NS_OBS" delete deployment kuber-loadgen --ignore-not-found --wait=true >/dev/null 2>&1 || true
   kubectl -n "$NS_OBS" delete configmap kuber-loadgen-script --ignore-not-found >/dev/null 2>&1 || true
 
+  # Primero el fichero: declara el Deployment y el ConfigMap con sus valores
+  # por defecto. DESPUÉS se sobrescriben con los del entorno; al revés, este
+  # apply pisaría RAMP_SECONDS/MAX_RPS/HOLD_SECONDS con los defaults y las
+  # variables de entorno no tendrían ningún efecto.
+  kubectl -n "$NS_OBS" apply -f ./tests/load/loadgen.yaml >/dev/null
+
   # El generador corre DENTRO del cluster a propósito: si lo ejecutamos desde
   # el host, la medición incluye el bottleneck de la red del portátil y los
   # números no dicen nada sobre el cluster.
@@ -156,14 +169,15 @@ run_load_generator() {
 
   # La configuración del generador sí se sobreescribe aquí, y esta vez donde
   # importa: el ConfigMap que el pod lee de verdad.
+  # TARGET es la URL IN-CLUSTER del frontend: el generador corre dentro del
+  # cluster y http://localhost:8080 allí es él mismo, no el sistema.
+  # (La URL del host, $API, solo se usa para los probes desde esta máquina.)
   kubectl -n "$NS_OBS" create configmap kuber-loadgen-config \
-    --from-literal=TARGET="$API" \
+    --from-literal=TARGET="http://kuber-frontend.kuber-app.svc.cluster.local:80/api/v1" \
     --from-literal=RAMP_SECONDS="$RAMP_SECONDS" \
-    --from-literal=MAX_RPS="${MAX_RPS:-500}" \
+    --from-literal=MAX_RPS="${MAX_RPS:-200}" \
     --from-literal=HOLD_SECONDS="${HOLD_SECONDS:-120}" \
     --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-
-  kubectl -n "$NS_OBS" apply -f ./tests/load/loadgen.yaml >/dev/null
 
   # ESTE era el bug: loadgen.yaml declara replicas: 0 a propósito, para que el
   # generador no esté gastando CPU fuera de las pruebas. Sin este scale, el
@@ -186,17 +200,28 @@ collect_load_metrics() {
   while (( elapsed < duration )); do
     local hpa_cur hpa_des cpu_mean cpu_max mem_mean ready total
     hpa_cur="$(hpa_replicas)"
-    hpa_des="$(kubectl -n "$NS_APP" get hpa "$BACKEND_HPA" -o jsonpath='{.spec.maxReplicas}' 2>/dev/null || echo '?')"
-    # stats de metrics-server, agregadas por los pods del backend
+    # desiredReplicas real del status, no spec.maxReplicas (constante).
+    # Puede venir vacío si el HPA aún no ha evaluado: se marca '?'.
+    hpa_des="$(kubectl -n "$NS_APP" get hpa "$BACKEND_HPA" -o jsonpath='{.status.desiredReplicas}' 2>/dev/null)"
+    [[ -z "$hpa_des" ]] && hpa_des="?"
+    # stats de metrics-server, agregadas por los pods del backend.
+    # OJO: la CPU puede venir en nanocores (1234567n), milicores (12m) o
+    # cores (0.012). Se normaliza todo a milicores antes de promediar.
     cpu_mean="$(kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods -n "$NS_APP" 2>/dev/null \
       | jq -r '[.items[] | select(.metadata.labels["app.kubernetes.io/name"]=="backend")
-                | .containers[].usage.cpu | sub("m$";"") | tonumber] | (length>0) | if . then (add/length) else 0 end' 2>/dev/null || echo 0)"
+                | .containers[].usage.cpu
+                | if endswith("n") then (sub("n$";"") | tonumber / 1000000)
+                  elif endswith("m") then (sub("m$";"") | tonumber)
+                  else (tonumber * 1000) end] | if length > 0 then (add/length) else 0 end' 2>/dev/null || echo 0)"
     cpu_max="$(kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods -n "$NS_APP" 2>/dev/null \
       | jq -r '[.items[] | select(.metadata.labels["app.kubernetes.io/name"]=="backend")
-                | .containers[].usage.cpu | sub("m$";"") | tonumber] | (length>0) | if . then max else 0 end' 2>/dev/null || echo 0)"
+                | .containers[].usage.cpu
+                | if endswith("n") then (sub("n$";"") | tonumber / 1000000)
+                  elif endswith("m") then (sub("m$";"") | tonumber)
+                  else (tonumber * 1000) end] | if length > 0 then max else 0 end' 2>/dev/null || echo 0)"
     mem_mean="$(kubectl get --raw /apis/metrics.k8s.io/v1beta1/pods -n "$NS_APP" 2>/dev/null \
       | jq -r '[.items[] | select(.metadata.labels["app.kubernetes.io/name"]=="backend")
-                | .containers[].usage.memory | sub("Ki$";"") | tonumber] | (length>0) | if . then (add/length|floor) else 0 end' 2>/dev/null || echo 0)"
+                | .containers[].usage.memory | sub("Ki$";"") | tonumber] | if length > 0 then (add/length|floor) else 0 end' 2>/dev/null || echo 0)"
     ready="$(kubectl -n "$NS_APP" get pods -l app.kubernetes.io/name=backend \
       --field-selector=status.phase=Running -o json 2>/dev/null \
       | jq -r '[.items[] | select([.status.conditions[]?|select(.type=="Ready")|.status]|.[0]=="True")] | length' 2>/dev/null || echo '?')"
@@ -248,7 +273,8 @@ watch_errors() {
     # loop secuencial, que se quedaría esperando la latencia en cada iteración.
     local results
     results="$(for _ in 1 2 3 4 5; do
-      curl -s -o /dev/null -w '%{http_code} ' --max-time 3 "$API/whoami" 2>/dev/null || echo -n "000 "
+      curl -s -o /dev/null -w '%{http_code} ' --max-time 3 \
+        -H "Host: kuber.local" "$API/whoami" 2>/dev/null || echo -n "000 "
     done)"
     for code in $results; do
       echo "$(date +%H:%M:%S),$code" >> "$out_file"

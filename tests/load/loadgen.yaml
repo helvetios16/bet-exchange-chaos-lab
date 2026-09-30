@@ -6,8 +6,9 @@
 #   es la red y la CPU del host, no el cluster. Los números no dicen nada
 #   sobre el sistema que se quiere evaluar.
 #
-# NodeSelector app: corre en los nodos worker, separado del control-plane, para
-# no competir con el API server.
+# NodeSelector spare: corre en el tercer worker, separado de backend y
+# frontend (workload=app) y del control-plane, para no competir con lo que
+# está midiendo ni con el API server.
 # =============================================================================
 apiVersion: v1
 kind: ConfigMap
@@ -15,9 +16,11 @@ metadata:
   name: kuber-loadgen-config
   namespace: kuber-observe
 data:
-  TARGET: "http://kuber-frontend.kuber-app.svc.cluster.local:8080/api/v1"
+  TARGET: "http://kuber-frontend.kuber-app.svc.cluster.local:80/api/v1"
   RAMP_SECONDS: "180"
-  MAX_RPS: "500"
+  # 200 = 50 r/s × 4 pods: el techo limpio del rate limit de nginx por IP.
+  # Por encima se mide el 429, no el sistema (ver LOAD_PODS en autopilot.sh).
+  MAX_RPS: "200"
   HOLD_SECONDS: "120"
   WORKERS: "64"
   REQUEST_TIMEOUT: "10"
@@ -47,8 +50,10 @@ spec:
         app.kubernetes.io/name: loadgen
     spec:
       restartPolicy: Always
+      # workload=spare: el tercer worker existe para esto. En workload=app
+      # competiría por CPU con backend y frontend, que es justo lo que mide.
       nodeSelector:
-        workload: app
+        workload: spare
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

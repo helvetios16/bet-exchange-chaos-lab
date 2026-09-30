@@ -27,7 +27,7 @@ import aiohttp
 TARGET = os.getenv("TARGET", "http://localhost:8080/api/v1")
 API = TARGET if TARGET.endswith("/api/v1") else f"{TARGET}/api/v1"
 RAMP_SECONDS = int(os.getenv("RAMP_SECONDS", "180"))
-MAX_RPS = int(os.getenv("MAX_RPS", "500"))
+MAX_RPS = int(os.getenv("MAX_RPS", "200"))
 HOLD_SECONDS = int(os.getenv("HOLD_SECONDS", "120"))
 WORKERS = int(os.getenv("WORKERS", "64"))
 TIMEOUT = float(os.getenv("REQUEST_TIMEOUT", "10"))
@@ -51,7 +51,7 @@ SEED = int(os.getenv("SEED", "1337"))
 WEIGHTS = {
     "events": 20, "market": 25, "odds": 20, "bet": 20, "settle": 8, "stats": 3, "whoami": 4,
 }
-MAX_RPS_DEFAULT = 500
+MAX_RPS_DEFAULT = 200
 
 _running = True
 _stats: dict = defaultdict(lambda: {"n": 0, "err": 0, "total_ms": 0.0, "max_ms": 0.0})
@@ -223,7 +223,16 @@ async def one_request(session: aiohttp.ClientSession, name: str, method: str,
         s["max_ms"] = max(s["max_ms"], ms)
 
 
-async def worker(session: aiohttp.ClientSession, stop: asyncio.Event, offset: float, period: float) -> None:
+async def bounded_request(cap: asyncio.Semaphore, session, name, method, path, payload) -> None:
+    """Una request acotada por el semáforo global de vuelo. Si el backend se
+    atasca, las tareas esperan aquí (baratas) en vez de acumular conexiones
+    y memoria sin límite."""
+    async with cap:
+        await one_request(session, name, method, path, payload)
+
+
+async def worker(session: aiohttp.ClientSession, stop: asyncio.Event, offset: float, period: float,
+                 cap: asyncio.Semaphore) -> None:
     """Un worker emite requests a una tasa fija, independientemente de lo que
     hagan los demás. El rate limiting global lo marca el orquestador, que va
     ajusta el número de workers en vez del sleep de cada uno: así la rampa
@@ -236,9 +245,10 @@ async def worker(session: aiohttp.ClientSession, stop: asyncio.Event, offset: fl
         if stop.is_set():
             break
         name, method, path, payload = pick_op()
-        # No se espera la request: se dispara. El límite de concurrencia lo
-        # impone WORKERS y el connect_limit del connector.
-        asyncio.create_task(one_request(session, name, method, path, payload))
+        # No se espera la request: se dispara. El semáforo acota cuántas
+        # hay en vuelo a la vez (ver in_flight_cap en main): sin esto, a
+        # 500 rps con timeout de 10 s se acumulan ~5000 tasks contra 512Mi.
+        asyncio.create_task(bounded_request(cap, session, name, method, path, payload))
         next_t += period
 
 
@@ -316,13 +326,19 @@ async def main() -> None:
         workers: list[asyncio.Task] = []
         total_phase = RAMP_SECONDS + HOLD_SECONDS
         t0 = time.perf_counter()
+        # Tope de requests en vuelo: con latencias sanas (ms) hay un puñado
+        # concurrente y el tope no muerde; si el backend se atasca, frena el
+        # apilamiento en vez de dejarlo crecer hasta el OOM del pod.
+        in_flight_cap = asyncio.Semaphore(max(1, WORKERS * 8))
         # Ramp lineal: el número de workers activos crece con el tiempo. Cada
         # worker emite a una tasa fija calculada para que el conjunto dé la
         # curva de rampa.
         max_workers = max(1, WORKERS)
         for i in range(max_workers):
             workers.append(
-                asyncio.create_task(worker(session, stop, offset=i * 0.0005, period=1.0 / MAX_RPS * max_workers))
+                asyncio.create_task(worker(session, stop, offset=i * 0.0005,
+                                           period=1.0 / MAX_RPS * max_workers,
+                                           cap=in_flight_cap))
             )
             # Retardo escalonado para que la rampa sea lineal en el tiempo:
             # el worker i entra en t = i * (RAMP/ max_workers)
