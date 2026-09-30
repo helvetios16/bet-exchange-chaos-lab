@@ -84,12 +84,24 @@ def seed_database(dsn: str, seed_dir: str = SEED_DIR, verbose: bool = True) -> d
 
             col_list = ", ".join(cols)
             placeholders = ", ".join(["%s"] * len(cols))
-            with cur.copy(f"COPY {table} ({col_list}) FROM STDIN") as cp:
-                for row in rows:
-                    cp.write_row(row)
+            # Cursor nuevo por tabla: el del TRUNCATE ya se cerró al salir de
+            # su `with`. Reutilizarlo aquí levanta InterfaceError.
+            with conn.cursor() as cur:
+                with cur.copy(f"COPY {table} ({col_list}) FROM STDIN") as cp:
+                    for row in rows:
+                        cp.write_row(row)
             counts[table] = len(rows)
             if verbose:
                 print(f"  [seed] {table}: {len(rows)} filas")
+
+        # Ledger inicial: cada wallet nace de un DEPOSIT por su saldo. Sin
+        # esto, drift = available - SUM(ledger) nace distinto de 0 y la
+        # invariante de auditoría es imposible desde el minuto cero.
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO transactions (user_id, type, amount, balance_after)
+                SELECT user_id, 'DEPOSIT', available, available FROM wallets
+            """)
 
         conn.commit()
 

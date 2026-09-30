@@ -23,7 +23,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import JSONResponse
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
-from psycopg_pool import AsyncConnectionPool
+from psycopg_pool import AsyncConnectionPool, PoolTimeout
 
 from seed_load import seed_database, seed_summary
 
@@ -304,8 +304,9 @@ async def fetch(query: str, params: tuple = ()) -> list[tuple]:
             DB_POOL_WAIT.observe(time.perf_counter() - t0)
             async with conn.cursor() as cur:
                 # statement_timeout por sesion: una query colgada no retiene
-                # una conexion del pool para siempre.
-                await cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+                # una conexion del pool para siempre. SET no acepta
+                # parámetros ($1): se interpola el entero ya validado.
+                await cur.execute(f"SET statement_timeout = {DB_STATEMENT_TIMEOUT_MS}")
                 await cur.execute(query, params)
                 rows = await cur.fetchall()
             await conn.commit()
@@ -314,7 +315,7 @@ async def fetch(query: str, params: tuple = ()) -> list[tuple]:
     except psycopg.errors.QueryCanceled:
         DB_QUERY_ERRORS.labels(kind="timeout").inc()
         raise HTTPException(status_code=504, detail="query timeout")
-    except psycopg.PoolTimeout:
+    except PoolTimeout:
         DB_QUERY_ERRORS.labels(kind="pool_timeout").inc()
         record_db_failure()
         raise HTTPException(status_code=503, detail="pool de conexiones agotado")
@@ -408,7 +409,7 @@ async def list_events(status: str | None = None, limit: int = 50,
     return {"pod": POD_NAME, "events": [dict(zip(cols, r)) for r in rows]}
 
 
-@app.get(f"{API_PREFIX}/events/{event_id}/markets")
+@app.get(f"{API_PREFIX}/events/{{event_id}}/markets")
 async def list_event_markets(event_id: int, _: None = Depends(rate_limit)):
     """Mercados abiertos de un evento. El generador de carga la usa para
     descubrir ids reales en lugar de inventarlos."""
@@ -429,7 +430,7 @@ async def list_event_markets(event_id: int, _: None = Depends(rate_limit)):
             "markets": [dict(zip(cols, r)) for r in rows]}
 
 
-@app.get(f"{API_PREFIX}/markets/{market_id}")
+@app.get(f"{API_PREFIX}/markets/{{market_id}}")
 async def get_market(market_id: int, _: None = Depends(rate_limit)):
     """Mercado con sus selecciones y el último precio de cada una.
     Es lo que "ve" el usuario antes de apostar."""
@@ -457,7 +458,7 @@ async def get_market(market_id: int, _: None = Depends(rate_limit)):
             "selections": [dict(zip(cols, r)) for r in rows]}
 
 
-@app.get(f"{API_PREFIX}/odds/{market_id}")
+@app.get(f"{API_PREFIX}/odds/{{market_id}}")
 async def get_odds(market_id: int, limit: int = 10,
                    _: None = Depends(rate_limit)):
     """Historial de cuotas del mercado. Es la query que satura la BD en las
@@ -520,7 +521,7 @@ async def place_bet(payload: dict, _: None = Depends(rate_limit)):
             DB_POOL_WAIT.observe(time.perf_counter() - t0)
             async with conn.transaction():
                 async with conn.cursor() as cur:
-                    await cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+                    await cur.execute(f"SET statement_timeout = {DB_STATEMENT_TIMEOUT_MS}")
 
                     # 1. El precio que vio el usuario. Inmutable: define qué se
                     #    liquida aunque el mercado se mueva después.
@@ -544,20 +545,26 @@ async def place_bet(payload: dict, _: None = Depends(rate_limit)):
                     # 2. Movimiento del wallet. El WHERE es la clave: si no hay
                     #    saldo, la sentencia no toca fila alguna y affected_rows
                     #    es 0. Eso es un rechazo atómico, no una carrera.
-                    #    Para LAY el requisito es el pasivo (exposure), no el
-                    #    efectivo: es lo que distingue un exchange de un casino.
+                    #    BACK bloquea el stake; LAY bloquea el pasivo
+                    #    (liability): en ambos casos sale de `available` para
+                    #    que el ledger (SUM) y el wallet no diverjan.
+                    #    `debit` es lo que se descuenta y lo que se apunta en
+                    #    el ledger: si difirieran, nacería drift.
                     if side == "BACK":
+                        debit = stake
                         await cur.execute(
                             "UPDATE wallets SET available = available - %s, updated_at = now() "
                             "WHERE user_id = %s AND available >= %s",
-                            (stake, user_id, stake),
+                            (debit, user_id, debit),
                         )
                     else:
                         liability = round2(stake * (price - 1))
+                        debit = liability
                         await cur.execute(
-                            "UPDATE wallets SET exposure = exposure + %s, updated_at = now() "
+                            "UPDATE wallets SET available = available - %s, "
+                            "exposure = exposure + %s, updated_at = now() "
                             "WHERE user_id = %s AND available >= %s",
-                            (liability, user_id, liability),
+                            (debit, debit, user_id, debit),
                         )
 
                     if cur.rowcount == 0:
@@ -596,7 +603,7 @@ async def place_bet(payload: dict, _: None = Depends(rate_limit)):
                     await cur.execute(
                         "INSERT INTO transactions (user_id, bet_id, type, amount, balance_after) "
                         "VALUES (%s, %s, 'BET_STAKE', %s, %s)",
-                        (user_id, bet_id, -stake, bal),
+                        (user_id, bet_id, -debit, bal),
                     )
 
                     # 5. Notificación. No crítica: si este servicio falla, el
@@ -614,7 +621,7 @@ async def place_bet(payload: dict, _: None = Depends(rate_limit)):
     except psycopg.errors.QueryCanceled:
         DB_QUERY_ERRORS.labels(kind="timeout").inc()
         raise HTTPException(status_code=504, detail="timeout colocando la apuesta")
-    except psycopg.PoolTimeout:
+    except PoolTimeout:
         DB_QUERY_ERRORS.labels(kind="pool_timeout").inc()
         record_db_failure()
         raise HTTPException(status_code=503, detail="pool agotado")
@@ -631,7 +638,7 @@ async def place_bet(payload: dict, _: None = Depends(rate_limit)):
             "potential_payout": payout, "status": "PLACED"}
 
 
-@app.post(f"{API_PREFIX}/bets/{bet_id}/settle")
+@app.post(f"{API_PREFIX}/bets/{{bet_id}}/settle")
 async def settle_bet(bet_id: int, payload: dict, _: None = Depends(rate_limit)):
     """Liquida una apuesta.
 
@@ -655,61 +662,65 @@ async def settle_bet(bet_id: int, payload: dict, _: None = Depends(rate_limit)):
         async with pool.connection() as conn:
             async with conn.transaction():
                 async with conn.cursor() as cur:
-                    await cur.execute("SET statement_timeout = %s", (DB_STATEMENT_TIMEOUT_MS,))
+                    await cur.execute(f"SET statement_timeout = {DB_STATEMENT_TIMEOUT_MS}")
 
                     # Bloqueo de la apuesta. Sin FOR UPDATE, dos liquidaciones
                     # simultáneas leerían el mismo status y pagarían dos veces.
+                    # Se trae el precio anclado (odds es versionada e inmutable)
+                    # para recomponer el pasivo LAY exacto del placement.
                     await cur.execute(
-                        "SELECT user_id, side, stake, potential_payout, status "
-                        "FROM bets WHERE id = %s FOR UPDATE",
+                        "SELECT b.user_id, b.side, b.stake, b.potential_payout, b.status, "
+                        "o.back_price, o.lay_price "
+                        "FROM bets b JOIN odds o ON o.id = b.odds_id "
+                        "WHERE b.id = %s FOR UPDATE",
                         (bet_id,),
                     )
                     row = await cur.fetchone()
                     if row is None:
                         raise HTTPException(status_code=404, detail="apuesta no encontrada")
-                    user_id, side, stake, potential, status = row
+                    user_id, side, stake, potential, status, back_price, lay_price = row
 
                     if status not in ("PLACED", "MATCHED"):
                         raise HTTPException(
                             status_code=409, detail=f"apuesta ya liquidada ({status})")
 
-                    payout = potential if won else 0.0
+                    # Contabilidad que conserva: cada euro que entra/sale de
+                    # `available` tiene su fila en el ledger por el mismo
+                    # importe, así drift se queda en 0. (La idempotencia ante
+                    # reintentos la dan este chequeo de status + FOR UPDATE +
+                    # el índice único de liquidation_key.)
+                    stake_f = float(stake)
                     new_status = "WON" if won else "LOST"
-
-                    # El índice único es el que realmente garantiza la
-                    # idempotencia: si ya existe esta clave, no se inserta.
-                    await cur.execute(
-                        """
-                        INSERT INTO transactions (user_id, bet_id, type, amount, balance_after)
-                        VALUES (%s, %s, 'BET_PAYOUT', %s, %s)
-                        ON CONFLICT DO NOTHING
-                        RETURNING id
-                        """,
-                        (user_id, bet_id, payout, payout),
-                    )
-                    if cur.rowcount == 0:
-                        raise HTTPException(status_code=409, detail="liquidación duplicada")
-
-                    # Descontar el pasivo de los LAY y devolver el stake al
-                    # BACK perdedor. El saldo del usuario tiene que cuadrar.
                     if side == "BACK":
+                        price = float(back_price)
+                        payout = float(potential) if won else 0.0
+                        # Perder no devuelve nada: el stake ya se descontó al
+                        # colocar. Devolverlo inventaría dinero (drift > 0).
                         if won:
                             await cur.execute(
                                 "UPDATE wallets SET available = available + %s, updated_at = now() "
                                 "WHERE user_id = %s", (payout, user_id))
-                        else:
-                            await cur.execute(
-                                "UPDATE wallets SET available = available + %s, updated_at = now() "
-                                "WHERE user_id = %s", (stake, user_id))
                     else:  # LAY
-                        liability = round2(stake * 1.0)
+                        price = float(lay_price)
+                        liability = round2(stake_f * (price - 1))
+                        payout = round2(liability + stake_f) if won else 0.0
                         await cur.execute(
                             "UPDATE wallets SET exposure = GREATEST(0, exposure - %s), updated_at = now() "
                             "WHERE user_id = %s", (liability, user_id))
-                        if not won:
+                        if won:
+                            # Pasivo liberado + ganancia del layer.
                             await cur.execute(
                                 "UPDATE wallets SET available = available + %s, updated_at = now() "
-                                "WHERE user_id = %s", (stake, user_id))
+                                "WHERE user_id = %s", (payout, user_id))
+
+                    await cur.execute(
+                        "SELECT available FROM wallets WHERE user_id = %s", (user_id,))
+                    (bal,) = await cur.fetchone()
+                    await cur.execute(
+                        "INSERT INTO transactions (user_id, bet_id, type, amount, balance_after) "
+                        "VALUES (%s, %s, 'BET_PAYOUT', %s, %s)",
+                        (user_id, bet_id, payout, bal),
+                    )
 
                     await cur.execute(
                         "UPDATE bets SET status = %s, payout = %s, settled_at = now(), "
@@ -720,12 +731,13 @@ async def settle_bet(bet_id: int, payload: dict, _: None = Depends(rate_limit)):
                         "INSERT INTO notifications (user_id, bet_id, kind, payload) "
                         "VALUES (%s, %s, %s, %s::jsonb)",
                         (user_id, bet_id, "BET_WON" if won else "BET_LOST",
-                         json.dumps({"payout": payout, "stake": stake})))
+                         # Decimal no es serializable en stdlib json.
+                         json.dumps({"payout": float(payout), "stake": float(stake)})))
     except HTTPException:
         raise
     except psycopg.errors.UniqueViolation:
         raise HTTPException(status_code=409, detail="liquidación duplicada")
-    except psycopg.PoolTimeout:
+    except PoolTimeout:
         record_db_failure()
         raise HTTPException(status_code=503, detail="pool agotado")
     except psycopg.Error as exc:
@@ -741,7 +753,7 @@ async def settle_bet(bet_id: int, payload: dict, _: None = Depends(rate_limit)):
     return {"pod": POD_NAME, "bet_id": bet_id, "status": new_status, "payout": payout}
 
 
-@app.get(f"{API_PREFIX}/users/{user_id}/wallet")
+@app.get(f"{API_PREFIX}/users/{{user_id}}/wallet")
 async def get_wallet(user_id: int, _: None = Depends(rate_limit)):
     """Saldo del usuario. En una prueba, comparar este número contra el
     SUM(amount) del ledger es lo que demuestra que no se ha perdido ni
