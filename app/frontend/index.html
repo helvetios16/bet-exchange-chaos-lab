@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Apuesta Total (simulado) — pruebas de escalabilidad y tolerancia a fallos</title>
+  <style>
+    :root {
+      --bg: #0f1115; --fg: #e6e6e6; --muted: #8b93a1;
+      --ok: #3fb950; --err: #f85149; --warn: #d29922; --card: #171a21;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; padding: 2rem 1rem; background: var(--bg); color: var(--fg);
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+    main { max-width: 880px; margin: 0 auto; }
+    h1 { font-size: 1.6rem; margin: 0 0 .25rem; }
+    h2 { font-size: 1.05rem; margin: 2rem 0 .75rem; color: var(--muted);
+         text-transform: uppercase; letter-spacing: .06em; }
+    p.lede { color: var(--muted); margin: 0 0 2rem; }
+    .card {
+      background: var(--card); border: 1px solid #23262e; border-radius: 8px;
+      padding: 1rem 1.25rem; margin-bottom: 1rem;
+    }
+    .row { display: flex; justify-content: space-between; align-items: center;
+           gap: 1rem; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: 1rem; }
+    code, pre {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem;
+    }
+    pre { background: #0b0d11; border: 1px solid #23262e; border-radius: 6px;
+          padding: .75rem; overflow-x: auto; margin: .5rem 0 0; }
+    .pill {
+      display: inline-flex; align-items: center; gap: .4rem;
+      padding: .15rem .6rem; border-radius: 999px; font-size: .78rem;
+      border: 1px solid; white-space: nowrap;
+    }
+    .pill.ok   { color: var(--ok);   border-color: var(--ok); }
+    .pill.err  { color: var(--err);  border-color: var(--err); }
+    .pill.wait { color: var(--warn); border-color: var(--warn); }
+    .muted { color: var(--muted); font-size: .85rem; }
+    button {
+      background: #238636; color: #fff; border: 0; border-radius: 6px;
+      padding: .45rem .9rem; font-size: .85rem; cursor: pointer;
+    }
+    button:hover { background: #2ea043; }
+    button.secondary { background: #30363d; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    ul { margin: .5rem 0 0; padding-left: 1.2rem; }
+    li { margin: .3rem 0; }
+    table { width: 100%; border-collapse: collapse; font-size: .87rem; }
+    th, td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid #23262e; }
+    th { color: var(--muted); font-weight: 500; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Apuesta Total <span style="font-size:.55em;color:var(--muted);font-weight:400">simulado</span></h1>
+  <p class="lede">
+    Entorno de laboratorio que se comporta como un exchange de apuestas: mismos
+    servicios, mismas condiciones de operación, datos sintéticos. Sirve para
+    observar el comportamiento del sistema durante las pruebas de estrés y de
+    tolerancia a fallos.
+  </p>
+
+  <h2>Estado</h2>
+  <div class="card">
+    <div class="row">
+      <div>
+        <div id="frontend-pod" class="muted">frontend: —</div>
+        <div id="backend-pod" class="muted">backend: —</div>
+      </div>
+      <span id="overall" class="pill wait">consultando…</span>
+    </div>
+  </div>
+
+  <h2>Health checks</h2>
+  <div class="card">
+    <table>
+      <thead><tr><th>Endpoint</th><th>Estado</th><th>Latencia</th></tr></thead>
+      <tbody>
+        <tr><td><code>/healthz</code> (frontend, sin BD)</td><td id="s-frontend">—</td><td id="t-frontend">—</td></tr>
+        <tr><td><code>/readyz</code> (frontend + backend + BD)</td><td id="s-ready">—</td><td id="t-ready">—</td></tr>
+        <tr><td><code>/backend/health</code></td><td id="s-backend">—</td><td id="t-backend">—</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Replicas del backend</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">
+      Cada request a <code>/api/v1/whoami</code> devuelve qué réplica la atenderó.
+      Al repetir la llamada en paralelo se ve el reparto de carga del Service.
+    </p>
+    <button id="btn-hammer">Enviar 50 requests en paralelo</button>
+    <button id="btn-reset" class="secondary" style="margin-left:.5rem">Limpiar</button>
+    <pre id="whoami-out">—</pre>
+  </div>
+
+  <h2>Mercados en juego</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">
+      Eventos <code>IN_PLAY</code> del dataset sembrado. Son los que mueven
+      cuotas mientras corre la carga.
+    </p>
+    <div class="row">
+      <div>
+        <div class="muted">Resultado</div>
+        <pre id="events-out">—</pre>
+      </div>
+      <button id="btn-events">Listar eventos en vivo</button>
+    </div>
+  </div>
+
+  <h2>Colocar una apuesta</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">
+      <code>POST /api/v1/bets</code> toca <b>wallet + ledger + bets + notifications</b>
+      en una sola transacción. Si el saldo no alcanza, responde <code>402</code>
+      (rechazo de negocio, no error del sistema).
+    </p>
+    <div class="row">
+      <div>
+        <div class="muted">Resultado</div>
+        <pre id="bet-out">—</pre>
+      </div>
+      <button id="btn-bet">Colocar apuesta</button>
+    </div>
+  </div>
+
+  <h2>Agregados del sistema</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">
+      <code>/api/v1/stats</code> cuenta apuestas abiertas, ganadas, perdidas y
+      volumen. Agrega sobre las tablas más calientes: es la query que satura
+      Postgres primero.
+    </p>
+    <div class="row">
+      <div>
+        <div class="muted">Resultado</div>
+        <pre id="stats-out">—</pre>
+      </div>
+      <button id="btn-stats">Consultar agregados</button>
+    </div>
+  </div>
+
+  <h2>Consistencia del saldo</h2>
+  <div class="card">
+    <p class="muted" style="margin-top:0">
+      Compara el <code>available</code> del wallet contra la suma del
+      <code>ledger</code>. <code>drift</code> a 0 significa que no se ha
+      perdido ni inventado dinero. Es la comprobación que más duele cuando
+      <b>no</b> da cero.
+    </p>
+    <div class="row">
+      <div>
+        <div class="muted">Resultado</div>
+        <pre id="wallet-out">—</pre>
+      </div>
+      <button id="btn-wallet">Auditar saldo de un usuario</button>
+    </div>
+  </div>
+
+  <h2>Cómo se prueba el sistema</h2>
+  <div class="card">
+    <ul>
+      <li><b>Escalabilidad</b> — <code>kubectl describe hpa kuber-backend-hpa -n kuber-app</code>
+        mientras corre carga. El HPA sube réplicas por uso de CPU.</li>
+      <li><b>Punto de inflexión</b> — <code>scripts/autopilot.sh</code> deja el backend en
+        carga sostenida y registra réplicas, latencia y errores por minuto.</li>
+      <li><b>Tolerancia a fallos</b> — matar un pod a mitad de traffic
+        (<code>autopilot.sh chaos</code>) mide cuántos requests se pierden de verdad.</li>
+      <li><b>Caída de dependencia</b> — detener Postgres. El backend debe
+        devolver 503 y el readiness debe sacarlo del Service, no reiniciarlo en cascada.</li>
+      <li><b>Idempotencia de liquidación</b> — liquidar la misma apuesta dos veces
+        debe devolver <code>409</code>, no pagar dos veces.</li>
+      <li><b>Consistencia del saldo</b> — el <code>drift</code> entre wallet y
+        ledger debe quedarse a 0 aunque haya miles de apuestas.</li>
+    </ul>
+  </div>
+</main>
+
+<script>
+  const API = '/api/v1';
+
+  async function timed(url) {
+    const t0 = performance.now();
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      const ms = Math.round(performance.now() - t0);
+      return { ok: res.ok, status: res.status, ms };
+    } catch (e) {
+      return { ok: false, status: 0, ms: Math.round(performance.now() - t0) };
+    }
+  }
+
+  function setCell(statusId, timeId, r, label) {
+    const pill = document.getElementById(statusId);
+    const t = document.getElementById(timeId);
+    pill.className = 'pill ' + (r.ok ? 'ok' : 'err');
+    pill.textContent = r.ok ? (r.status + ' ' + label) : 'fallo (' + r.status + ')';
+    t.textContent = r.ms + ' ms';
+    return r.ok;
+  }
+
+  async function refresh() {
+    const f = await timed('/healthz');
+    const ready = await timed('/readyz');
+    const b = await timed('/backend/health');
+    const a = setCell('s-frontend', 't-frontend', f, 'ok');
+    const c = setCell('s-ready', 't-ready', ready, 'ok');
+    const d = setCell('s-backend', 't-backend', b, 'ok');
+
+    const overall = document.getElementById('overall');
+    const all = a && c && d;
+    overall.className = 'pill ' + (all ? 'ok' : 'err');
+    overall.textContent = all ? 'todos los checks ok' : 'degradado';
+
+    const who = await timed(API + '/whoami');
+    if (who.ok) {
+      const j = await (await fetch(API + '/whoami', { cache: 'no-store' })).json();
+      document.getElementById('frontend-pod').textContent =
+        'frontend servido por nginx — nodo ' + (j.node || '?');
+      document.getElementById('backend-pod').textContent =
+        'backend replied from pod: ' + (j.pod || '?');
+    }
+  }
+
+  document.getElementById('btn-hammer').onclick = async (e) => {
+    e.target.disabled = true;
+    const out = document.getElementById('whoami-out');
+    out.textContent = 'enviando 50 requests…';
+    const results = await Promise.all(
+      Array.from({ length: 50 }, () => fetch(API + '/whoami').then(r => r.json()).catch(() => null))
+    );
+    const counts = {};
+    for (const r of results) {
+      if (r && r.pod) counts[r.pod] = (counts[r.pod] || 0) + 1;
+    }
+    out.textContent = results.filter(Boolean).length + '/50 respondieron\n\n' +
+      Object.entries(counts)
+        .sort((a, b) => b[1] - a[1])
+        .map(([pod, n]) => '  ' + pod.padEnd(42) + n + ' (' + Math.round(n / 50 * 100) + '%)')
+        .join('\n') ||
+      '  (sin respuestas)';
+    e.target.disabled = false;
+  };
+
+  document.getElementById('btn-reset').onclick = () => {
+    document.getElementById('whoami-out').textContent = '—';
+  };
+
+  document.getElementById('btn-stats').onclick = async (e) => {
+    e.target.disabled = true;
+    const out = document.getElementById('stats-out');
+    out.textContent = 'ejecutando…';
+    const r = await timed(API + '/stats');
+    if (r.ok) {
+      const j = await (await fetch(API + '/stats')).json();
+      out.textContent =
+        'eventos en vivo   ' + j.live_events + '\n' +
+        'mercados abiertos ' + j.open_markets + '\n' +
+        'apuestas totales  ' + j.total_bets + '\n' +
+        '  abiertas        ' + j.open_bets + '\n' +
+        '  ganadas         ' + j.won + '\n' +
+        '  perdidas        ' + j.lost + '\n' +
+        'volumen           ' + j.volume + '\n' +
+        'notif. pendientes ' + j.pending_notifications + '\n\n(' + r.ms + ' ms)';
+    } else {
+      out.textContent = 'ERROR ' + r.status + '  ' + r.ms + ' ms';
+    }
+    e.target.disabled = false;
+  };
+
+  document.getElementById('btn-events').onclick = async (e) => {
+    e.target.disabled = true;
+    const out = document.getElementById('events-out');
+    out.textContent = 'consultando…';
+    const r = await timed(API + '/events?status=IN_PLAY&limit=12');
+    if (r.ok) {
+      const j = await (await fetch(API + '/events?status=IN_PLAY&limit=12')).json();
+      out.textContent = j.events.length + ' eventos en juego\n\n' + j.events
+        .map(ev => '  ' + ev.name.padEnd(34) +
+                    ' ' + String(ev.score_home) + '-' + String(ev.score_away) +
+                    "  min " + ev.clock_minute +
+                    '  ' + ev.markets + ' mercados')
+        .join('\n');
+    } else {
+      out.textContent = 'ERROR ' + r.status + '  ' + r.ms + ' ms';
+    }
+    e.target.disabled = false;
+  };
+
+  document.getElementById('btn-bet').onclick = async (e) => {
+    e.target.disabled = true;
+    const out = document.getElementById('bet-out');
+    out.textContent = 'descubriendo mercados…';
+    try {
+      const evs = await (await fetch(API + '/events?limit=5')).json();
+      const withMk = evs.events.filter(x => x.markets > 0);
+      if (!withMk.length) { out.textContent = 'no hay mercados abiertos'; return; }
+      const mks = await (await fetch(API + '/events/' + withMk[0].id + '/markets')).json();
+      if (!mks.markets.length) { out.textContent = 'no hay mercados'; return; }
+      const mk = await (await fetch(API + '/markets/' + mks.markets[0].id)).json();
+      const sel = mk.selections.find(s => s.odds_id);
+      if (!sel) { out.textContent = 'el mercado no tiene cuotas'; return; }
+
+      const res = await fetch(API + '/bets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          user_id: 1, odds_id: sel.odds_id, stake: 10.00, side: 'BACK'
+        })
+      });
+      const body = await res.json();
+      out.textContent = res.status === 200 || res.status < 300
+        ? 'ACEPTADA\n' + JSON.stringify(body, null, 2)
+        : 'HTTP ' + res.status + '\n' + JSON.stringify(body, null, 2) +
+          '\n\n(402 = saldo insuficiente: rechazo de negocio, no error)';
+    } catch (err) {
+      out.textContent = 'ERROR: ' + err.message;
+    }
+    e.target.disabled = false;
+  };
+
+  document.getElementById('btn-wallet').onclick = async (e) => {
+    e.target.disabled = true;
+    const out = document.getElementById('wallet-out');
+    out.textContent = 'consultando…';
+    // Usuario 1: existe siempre en el dataset sembrado (seed.py genera ids
+    // contiguos desde 1).
+    const uid = 1;
+    const r = await timed(API + '/users/' + uid + '/wallet');
+    if (r.ok) {
+      const j = await (await fetch(API + '/users/' + uid + '/wallet')).json();
+      out.textContent =
+        'usuario        ' + j.user_id + '\n' +
+        'available      ' + j.available + ' ' + j.currency + '\n' +
+        'exposure       ' + j.exposure + '\n' +
+        'suma ledger    ' + j.ledger_sum + '\n' +
+        'drift          ' + j.drift + '\n\n' +
+        (Math.abs(j.drift) < 0.01
+          ? 'OK: wallet y ledger cuadran\n(' + r.ms + ' ms)'
+          : 'DESCUADRE: ' + j.drift + '\n(' + r.ms + ' ms)');
+    } else {
+      out.textContent = 'ERROR ' + r.status + '  ' + r.ms + ' ms';
+    }
+    e.target.disabled = false;
+  };
+
+  refresh();
+  // Polling suave: cada 5s solo, para no interferir con las pruebas de carga
+  // que miden el mismo sistema.
+  setInterval(refresh, 5000);
+</script>
+</body>
+</html>

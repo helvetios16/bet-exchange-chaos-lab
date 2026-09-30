@@ -1,0 +1,275 @@
+# =============================================================================
+# PostgreSQL como StatefulSet
+#
+# Decisiones:
+#  - StatefulSet (no Deployment): identidad de red estable (DNS por ordinal) y
+#    volumen persistente por replica. Es lo que hace posible un Primary/Standby
+#    deterministico.
+#  - headless Service: da DNS estable (kuber-postgres-0.kuber-postgres...)
+#  - PVC por replica via volumeClaimTemplates: cada pod tiene su disco propio
+#  - terminationGracePeriodSeconds holgado: Postgres necesita checkpoint limpio
+#    antes de morir o el recovery se alarga
+#  - preStop hook: detiene el trafico ANTES de que el kubelet mande SIGTERM,
+#    para que las conexiones mueran en el server y no en el cliente
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuber-postgres
+  namespace: kuber-data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  # headless: sin IP de ClusterIP, solo DNS por pod
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuber-postgres-client
+  namespace: kuber-data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+      protocol: TCP
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kuber-postgres
+  namespace: kuber-data
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+spec:
+  serviceName: kuber-postgres
+  replicas: 1
+  # Politica de borrado ordenada: al hacer rollouts nunca hay dos writers
+  podManagementPolicy: OrderedReady
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/component: database
+      annotations:
+        # Sin esto, prometheus se come 1GB+ de RAM en el nodo
+        prometheus.io/scrape: "false"
+    spec:
+      # Postgres tarda en arrancar; patience generous
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: postgres
+      containers:
+        - name: postgres
+          image: postgres:16.4-alpine
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: postgres
+              containerPort: 5432
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: kuber-postgres-config
+            - secretRef:
+                name: kuber-postgres-secret
+          env:
+            - name: PGPORT
+              value: "5432"
+            # Fuerza SSL off dentro del cluster (red interna confiable)
+            - name: PGSSLMODE
+              value: disable
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              # Sin limit de CPU: Postgres debe poder usar CPU libre para
+              # responder rapido cuando hay carga, sin throttling.
+              # Si se limitara, el scheduler lo mataria por CFS throttling
+              # durante las pruebas de estres.
+              memory: 1Gi
+              ephemeral-storage: 1Gi
+          startupProbe:
+            # startupProbe protege el startup lento y DESACTIVA liveness/readiness
+            # hasta que la BD responde. Evita el crash-loop clasico.
+            # No hay HTTP en postgres, asi que se usa exec con pg_isready.
+            exec:
+              command:
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1
+            initialDelaySeconds: 0
+            periodSeconds: 3
+            timeoutSeconds: 5
+            failureThreshold: 40      # hasta 2 minutos de arranque
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 4
+            successThreshold: 1
+          readinessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          lifecycle:
+            preStop:
+              exec:
+                # Cierra las conexiones activas y fuerza un checkpoint ANTES
+                # de que el kubelet mande SIGTERM. Sin esto, Postgres muere
+                # con backends a medio escribir y el recovery se alarga. El
+                # kubelet da margen porque terminationGracePeriodSeconds=60.
+                command:
+                  - sh
+                  - -c
+                  - |
+                    psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d postgres <<'EOSQL'
+                    SELECT pg_terminate_backend(pid) FROM pg_stat_activity
+                      WHERE datname = '$POSTGRES_DB' AND pid <> pg_backend_pid();
+                    CHECKPOINT;
+                    EOSQL
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+          # --- Pod Security: restricted ---
+          # El namespace kuber-data tiene enforce: restricted, así que SIN
+          # estas tres líneas el admission controller RECHAZA el pod y la base
+          # de datos nunca arranca. Son obligatorias, no una mejora.
+          securityContext:
+            allowPrivilegeEscalation: false
+            # Postgres NO necesita SETUID/SETGID para nada aquí: corre ya como
+            # 999 desde el securityContext del pod.
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+        labels:
+          app.kubernetes.io/name: postgres
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        # kind usa local-path provisioner. En cloud: gp2 (AWS EBS), 
+        # premium-ssd (GCP), disk (Azure) con Retain
+        storageClassName: standard
+        resources:
+          requests:
+            storage: 10Gi
+---
+# PodDisruptionBudget: limita cuantos pods de la BD se pueden caer a la vez
+# durante operaciones voluntarias (drenar nodos, upgrades del cluster).
+# maxUnavailable: 0 = el drain de un nodo se bloquea si el pod de la BD esta
+# ahi. En la practica: la BD tiene que estar reprogramada antes, o se pierde
+# la garantia de cero caidas.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kuber-postgres-pdb
+  namespace: kuber-data
+spec:
+  maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+---
+# NetworkPolicy: Postgres SOLO acepta trafico del backend.
+# Default-deny a nivel de namespace + allow especifico.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kuber-data
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-postgres-from-backend
+  namespace: kuber-data
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Unico origen permitido: pods backend del namespace kuber-app.
+    # namespaceSelector + podSelector juntos = regla cruzada de namespace.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kuber-app
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 5432
+  egress:
+    # Postgres necesita salir a DNS para resolver otros pods
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              name: kuber-data
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

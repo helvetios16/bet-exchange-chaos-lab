@@ -1,0 +1,450 @@
+# =============================================================================
+# Backend — Deployment stateless + Service + HPA + PDB
+#
+# Es el workload que mas se replica: es stateless, la sesion vive en Postgres,
+# y por eso escala horizontalmente sin friccion.
+# =============================================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: kuber-backend
+  namespace: kuber-app
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: backend
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP
+---
+---
+# =============================================================================
+# Semillas del dominio (Apuesta Total simulado).
+#
+# Es un ConfigMap y no va horneado en la imagen: regenerar el dataset con
+# `make seeds` no debe obligar a reconstruir. El backend lo monta en
+# /app/seeds y lo carga una vez al arrancar, protegido por un advisory lock
+# para que los N pods que suben a la vez no se pisen.
+#
+# Para regenerarlo:
+#   make seeds && kubectl -n kuber-app delete cm kuber-seed-data && \
+#   kubectl create cm kuber-seed-data --from-file=seeds/ -n kuber-app
+#   kubectl -n kuber-app rollout restart deploy/kuber-backend
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuber-seed-data
+  namespace: kuber-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: seed-data
+  annotations:
+    # Invalida el rollout cuando las semillas cambian: sin esto, un
+    # `rollout restart` con el mismo contenido no sube pods nuevos.
+    kubectl.kubernetes.io/last-applied: "generado por make seeds"
+data: {}
+# El contenido real lo inyecta `make seeds-data` (ver Makefile). Este manifest
+# existe para que el Deployment pueda referenciar el ConfigMap desde el primer
+# arranque sin fallar por referencia ausente.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuber-backend
+  namespace: kuber-app
+  labels:
+    app.kubernetes.io/name: backend
+    app.kubernetes.io/component: api
+spec:
+  # minimo de partida. El HPA decide el resto.
+  replicas: 2
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # nunca baja del minimo disponible: mantiene el servicio vivo durante
+      # el rollout. Requiere maxUnavailable=0 y el HPA debe permitirlo.
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: backend
+        app.kubernetes.io/component: api
+        app.kubernetes.io/version: "1.0.0"
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Tiempo para que la app termine requests en vuelo al recibir SIGTERM.
+      # Debe ser > (tiempo de respuesta p99) o se cortan peticiones sanas.
+      terminationGracePeriodSeconds: 45
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # --- Tolerancia a fallos: distribucion ---
+      # Impide que todos los pods caigan en el mismo nodo. Con 2 replicas y
+      # este constraint, el scheduler las separa si hay >=2 nodos libres.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      # --- Tolerancia a fallos: taints ---
+      # (placeholder: sin taints en dev; en prod con nodos dedicados se usa
+      #  tolerations + nodeAffinity para fijar el backend a nodos "app")
+      nodeSelector:
+        workload: app
+      tolerations: []
+      containers:
+        - name: backend
+          image: kuber/backend:1.0.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: kuber-app-config
+            - secretRef:
+                name: kuber-backend-secret
+          env:
+            - name: DB_HOST
+              value: "kuber-postgres-client.kuber-data.svc.cluster.local"
+            - name: DB_PORT
+              value: "5432"
+            - name: DB_NAME
+              value: "kuber"
+            - name: DB_USER
+              value: "kuber"
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            # Identidad de replica para observabilidad (trazas, logs)
+            - name: HOSTNAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          resources:
+            requests:
+              # requests = la reserva garantizada. El HPA mide el % de uso
+              # respecto a ESTE numero, asi que es el parametro mas
+              # importante del escalado automatico.
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              # limits = techo duro. Si no hay limit de CPU, el HPA de CPU no
+              # tiene referencia (utilization = uso / request) y ademas el
+              # nodo puede sobrecomprometerse.
+              cpu: 1000m
+              memory: 512Mi
+          # --- Sondas: el corazon de la tolerancia a fallos ---
+          startupProbe:
+            # Protege el arranque lento. Hasta que pasa, liveness y readiness
+            # estan DESACTIVADAS. Sin esto, un arranque de 40s con liveness
+            # cada 15s = 3 reinicios = CrashLoopBackOff.
+            httpGet:
+              path: /health/startup
+              port: http
+            periodSeconds: 3
+            timeoutSeconds: 2
+            failureThreshold: 30      # 90s de margen
+          livenessProbe:
+            # ¿El proceso esta VIVO? Si falla N veces seguidos -> restart.
+            # Debe ser rapida y cheap. NO debe chequear dependencias externas
+            # (si chequea la BD, una caida de Postgres reinicia todos los
+            # pods en cascada: eso es un outage amplificado, no resiliency).
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3       # ~30s para detectar y reiniciar
+            successThreshold: 1
+          readinessProbe:
+            # ¿Puede ACEPTAR trafico? Si falla, el pod se saca del Service
+            # (Endpoint removal) pero NO se reinicia. Esto es lo que hace que
+            # la app degrade en vez de caerse cuando la BD va lenta.
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            # failureThreshold alto = tolerar latencia de la BD antes de
+            # sacar el pod. Con 3 seria demasiado agresivo.
+            failureThreshold: 3
+            successThreshold: 1
+          lifecycle:
+            preStop:
+              exec:
+                # OJO: el kubelet corre preStop y LUEGO manda SIGTERM. Este
+                # sleep NO es un waste: da tiempo a que kube-proxy actualice
+                # los endpoints en todos los nodos. Sin el, el traffic que
+                # aun apunta a este pod recibe ECONNREFUSED durante ~1-2s.
+                # Es el truco estandar de "drain" en Kubernetes.
+                command:
+                  - sh
+                  - -c
+                  - sleep 15
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            # Semillas montadas en solo lectura: el generador las produce con
+            # `make seeds` y se publican como ConfigMap. No van horneadas en la
+            # imagen a propósito, para poder regenerarlas sin reconstruir.
+            - name: seeds
+              mountPath: /app/seeds
+              readOnly: true
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: seeds
+          configMap:
+            name: kuber-seed-data
+            # 0444: solo lectura. El pod carga las semillas, no las escribe.
+            defaultMode: 0444
+---
+# =============================================================================
+# HPA: Horizontal Pod Autoscaler
+#
+# Metricas: CPU y memoria (utilization = uso / request).
+# NOTA sobre limitaciones importantes:
+#  - El HPA necesita metrics-server. kind no lo trae de serie.
+#    kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+#  - El HPA calcula sobre el PROMEDIO de pods, no sobre el max. Con 10 pods
+#    al 10% (media 10%) no escala, aunque uno este saturado.
+#  - Enfoscar: ~2 minutos de media movil, y el sync period por defecto es 15s,
+#    asi que el primer cambio aparece en ~1-2 min. Las pruebas de estres deben
+#   .await al menos 3-5 min para que el escalado se estabilice.
+# =============================================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: kuber-backend-hpa
+  namespace: kuber-app
+  labels:
+    app.kubernetes.io/name: backend
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: kuber-backend
+  minReplicas: 2
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # 70% del request (200m) => dispara a ~140m de uso medio.
+          # Mas bajo => escala antes y desperdicia; mas alto => satura antes.
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          # 80% del request (256Mi) => ~205Mi. Cuidado: la memoria casi
+          # nunca baja, asi que este HPA es irreversible en la practica
+          # (scale-down casi nunca ocurre por memoria).
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      # Reactivo: la BD de usuarios crece rapido cuando hay un pico.
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100        # puede duplicar replicas cada ventana
+          periodSeconds: 30
+        - type: Pods
+          value: 4         # y anadir hasta 4 pods por ventana
+          periodSeconds: 30
+      selectPolicy: Max
+    scaleDown:
+      # Conservador al bajar: evita el oscilo clasico
+      # (escala->baja->escala->baja) cuando la carga oscila cerca del umbral.
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+---
+# =============================================================================
+# PDB: durante operaciones voluntarias (drain, upgrade de nodos) nunca puede
+# caer mas de 1 pod a la vez. minAvailable: 1 con replicas>=2.
+# =============================================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: kuber-backend-pdb
+  namespace: kuber-app
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+---
+# =============================================================================
+# NetworkPolicy del namespace de la app: default-deny + allows minimos.
+# =============================================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: kuber-app
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-frontend-to-backend
+  namespace: kuber-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Solo el Ingress controller (traefik) y el pod de carga pueden hablar
+    # con el frontend. traefik corre en kube-system.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kuber-observe
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # El frontend llama al backend por DNS
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: backend
+      ports:
+        - protocol: TCP
+          port: 8080
+    # DNS
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-backend
+  namespace: kuber-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Del frontend, del ingress, y del runner de pruebas
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: frontend
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kuber-observe
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    # Solo puede hablar con Postgres. Cierre de la superficie de ataque.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kuber-data
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53

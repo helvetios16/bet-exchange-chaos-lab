@@ -1,0 +1,64 @@
+# =============================================================================
+# ConfigMap de la aplicacion.
+# NOTA: aqui NO van contrasenas. Solo configuracion no sensible.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuber-app-config
+  namespace: kuber-app
+data:
+  APP_ENV: "staging"
+  LOG_LEVEL: "INFO"
+  LOG_FORMAT: "json"
+  API_PREFIX: "/api/v1"
+  # Pool de conexiones a Postgres
+  DB_POOL_MIN: "2"
+  DB_POOL_MAX: "20"
+  DB_CONNECT_TIMEOUT_MS: "3000"
+  DB_STATEMENT_TIMEOUT_MS: "5000"
+  # Circuit breaker hacia la BD
+  DB_CIRCUIT_FAIL_THRESHOLD: "5"
+  DB_CIRCUIT_RESET_SECONDS: "30"
+  # Rate limiting por IP (para las pruebas de estres poder validar 429)
+  RATE_LIMIT_ENABLED: "true"
+  RATE_LIMIT_REQUESTS: "200"
+  RATE_LIMIT_WINDOW_SECONDS: "60"
+  # Cache
+  CACHE_TTL_SECONDS: "60"
+  # Sondas
+  PROBE_STARTUP_FAILURE_THRESHOLD: "30"
+  PROBE_STARTUP_PERIOD_SECONDS: "2"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuber-postgres-config
+  namespace: kuber-data
+data:
+  POSTGRES_DB: "kuber"
+  POSTGRES_USER: "kuber"
+  # Parametros de rendimiento de Postgres
+  # shared_buffers bajo para que quepa en el limite del contenedor
+  PGDATA: "/var/lib/postgresql/data/pgdata"
+  POSTGRES_INITDB_ARGS: "--data-checksums --encoding=UTF8"
+  # --- tuning ---
+  max_connections: "200"
+  shared_buffers: "256MB"
+  effective_cache_size: "768MB"
+  work_mem: "8MB"
+  maintenance_work_mem: "128MB"
+  # logging
+  log_min_duration_statement: "500"
+  log_checkpoints: "on"
+  log_connections: "off"
+  log_disconnections: "off"
+  # WAL / durabilidad (importante para el analisis de RPO)
+  wal_level: "replica"
+  max_wal_size: "1GB"
+  min_wal_size: "128MB"
+  checkpoint_completion_target: "0.9"
+  checkpoint_timeout: "5min"
+  # autovacuum
+  autovacuum: "on"
+  autovacuum_naptime: "30s"

@@ -1,0 +1,77 @@
+# =============================================================================
+# Namespaces
+#   kuber-app      -> workloads de la app (frontend, backend)
+#   kuber-data     -> postgres (aislado por NetworkPolicy)
+#   kuber-observe  -> metricas, dashboards, agent de carga
+# =============================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuber-app
+  labels:
+    name: kuber-app
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuber-data
+  labels:
+    name: kuber-data
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kuber-observe
+  labels:
+    name: kuber-observe
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+# Quotas:(topa de recursos del namespace app. Evita que un runaway de HPA
+# se coma el nodo entero y provoque un OOMKilled en cadena.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: kuber-app-quota
+  namespace: kuber-app
+spec:
+  hard:
+    requests.cpu: "8"
+    requests.memory: 16Gi
+    limits.cpu: "16"
+    limits.memory: 32Gi
+    persistentvolumeclaims: "10"
+    pods: "60"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: kuber-app-defaults
+  namespace: kuber-app
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: 500m
+        memory: 512Mi
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      max:
+        cpu: "2"
+        memory: 2Gi
+# Nota: LimitRange.spec SOLO admite el campo `limits`. No existe un `requests`
+# hermano: los requests por defecto se expresan con `defaultRequest` DENTRO de
+# cada entrada de `limits` (arriba). Un `spec.requests` hace que el API server
+# rechace el recurso entero.
+#
+# Lo que se ha perdido al quitar el `min`: LimitRange no puede expresar un
+# mínimo de request por contenedor. Si algún día hace falta, la vía correcta es
+# un ResourceQuota con min/max, no un campo inventado.

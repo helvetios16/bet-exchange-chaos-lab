@@ -1,0 +1,56 @@
+# --- Secrets / entornos ---
+*.env
+*.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+!**/public_key.pem
+
+# --- Kubernetes local overrides ---
+*.local.yaml
+kustomize/**/overlays/local/
+kubeconfig
+*.kubeconfig
+
+# --- Test artifacts ---
+reports/
+results/
+*.har
+*.json.gz
+screenshots/
+
+# --- OS / editores ---
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Node (frontend tooling) ---
+node_modules/
+frontend/.next/
+frontend/dist/
+frontend/build/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# --- Go ---
+bin/
+*.test
+
+# --- Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example

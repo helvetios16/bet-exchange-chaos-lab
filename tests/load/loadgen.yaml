@@ -1,0 +1,95 @@
+# =============================================================================
+# Generador de carga — corre DENTRO del cluster
+#
+# Por qué como pod y no desde el host:
+#   si el generador se ejecuta desde el portátil, el cuello de botella medido
+#   es la red y la CPU del host, no el cluster. Los números no dicen nada
+#   sobre el sistema que se quiere evaluar.
+#
+# NodeSelector app: corre en los nodos worker, separado del control-plane, para
+# no competir con el API server.
+# =============================================================================
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kuber-loadgen-config
+  namespace: kuber-observe
+data:
+  TARGET: "http://kuber-frontend.kuber-app.svc.cluster.local:8080/api/v1"
+  RAMP_SECONDS: "180"
+  MAX_RPS: "500"
+  HOLD_SECONDS: "120"
+  WORKERS: "64"
+  REQUEST_TIMEOUT: "10"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kuber-loadgen
+  namespace: kuber-observe
+  labels:
+    app.kubernetes.io/name: loadgen
+  annotations:
+    # exclusion: las métricas de Prometheus no deben incluir al generador,
+    # o el HPA reacciona a la carga que él mismo genera.
+    sidecar.istio.io/inject: "false"
+spec:
+  # 0 por defecto: el autopilot lo escala a 1 solo durante las pruebas.
+  # Con réplicas siempre activas, el generador estaría generando carga
+  # constantly y falseando cualquier medición.
+  replicas: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: loadgen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: loadgen
+    spec:
+      restartPolicy: Always
+      nodeSelector:
+        workload: app
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: loadgen
+          image: kuber/loadgen:1.0.0
+          imagePullPolicy: IfNotPresent
+          command: ["python", "/load/load.py"]
+          envFrom:
+            - configMapRef:
+                name: kuber-loadgen-config
+          env:
+            - name: SUMMARY_PATH
+              value: /tmp/load-summary.json
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              # Con CPU limitado, el propio generador se vuelve el cuello de
+              # botella a partir de cierto RPS y mide mal. Se sube a 2 para
+              # los workers puedan alcanzar su objetivo de tasa.
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: load
+              mountPath: /load
+              readOnly: true
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: load
+          configMap:
+            name: kuber-loadgen-script
+            defaultMode: 0555
