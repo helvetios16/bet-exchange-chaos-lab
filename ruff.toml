@@ -1,0 +1,7 @@
+# Análisis estático: errores reales (sintaxis, nombres sin definir, imports y
+# variables sin uso). Se amplía de forma gradual para no bloquear con estilo.
+target-version = "py312"
+extend-exclude = ["seeds"]
+
+[lint]
+select = ["E9", "F"]

@@ -228,7 +228,6 @@ class SeedGenerator:
         for s in selections:
             sel_by_market.setdefault(s["market_id"], []).append(s)
 
-        market_by_id = {m["id"]: m for m in markets}
         odds_rows = []
         o_id = 1
         for m in markets:

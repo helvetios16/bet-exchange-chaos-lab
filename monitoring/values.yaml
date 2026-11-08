@@ -1,0 +1,45 @@
+# kube-prometheus-stack reducido para 3 nodos t3.medium.
+# Instalación: ver scripts/deploy-aws.sh (helm upgrade --install monitoring ...)
+alertmanager:
+  enabled: false
+
+prometheus:
+  prometheusSpec:
+    retention: 12h
+    # Descubre ServiceMonitors de cualquier namespace/etiqueta (el del backend
+    # vive en el namespace monitoring pero apunta a kuber-app).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    resources:
+      requests: { cpu: 100m, memory: 400Mi }
+      limits:   { cpu: 500m, memory: 900Mi }
+
+grafana:
+  # La contraseña NO está en el repo: la crea deploy-aws.sh en el Secret
+  # grafana-admin (namespace monitoring) con un valor aleatorio.
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+  resources:
+    requests: { cpu: 50m, memory: 128Mi }
+    limits:   { cpu: 300m, memory: 400Mi }
+  service:
+    type: ClusterIP   # se abre con: kubectl -n monitoring port-forward svc/monitoring-grafana 3000:80
+
+kube-state-metrics:
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+
+prometheus-node-exporter:
+  resources:
+    requests: { cpu: 20m, memory: 32Mi }
+
+prometheusOperator:
+  resources:
+    requests: { cpu: 50m, memory: 100Mi }

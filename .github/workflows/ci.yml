@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Análisis estático (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install ruff==0.8.4
+      - run: ruff check app tests
+
+  test:
+    name: Pruebas (unitarias + integración)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: kuber
+          POSTGRES_PASSWORD: kuber
+          POSTGRES_DB: kuber_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U kuber -d kuber_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      REQUIRE_DB: "1"   # sin Postgres los tests de integración FALLAN, no se saltan
+      TEST_DB_HOST: localhost
+      TEST_DB_USER: kuber
+      TEST_DB_PASSWORD: kuber
+      TEST_DB_NAME: kuber_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: pytest
+        run: >
+          pytest --junitxml=reports/junit.xml
+          --cov=app/backend --cov-report=xml:reports/coverage.xml
+          --cov-report=term-missing
+      - name: Resumen en la página del run
+        if: always()
+        run: |
+          {
+            echo "### Resultado de las pruebas"
+            python - <<'PY'
+          import xml.etree.ElementTree as ET
+          r = ET.parse("reports/junit.xml").getroot()
+          s = r if r.tag == "testsuite" else r.find("testsuite")
+          print(f"- tests: {s.get('tests')}  fallos: {s.get('failures')}  errores: {s.get('errors')}  saltados: {s.get('skipped')}")
+          PY
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Subir reportes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-de-pruebas
+          path: reports/
+
+  build:
+    name: Construir imágenes Docker
+    needs: [lint, test]        # si falla un test, no se construye nada
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image:
+          - { name: backend,  context: app/backend }
+          - { name: frontend, context: app/frontend }
+          - { name: loadgen,  context: tests/load }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.image.context }}
+          push: false
+          tags: kuber/${{ matrix.image.name }}:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

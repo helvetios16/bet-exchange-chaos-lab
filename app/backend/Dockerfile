@@ -38,7 +38,10 @@ RUN mkdir -p /app/seeds && chown 10001:10001 /app/seeds
 
 USER 10001:10001
 
-ENV PYTHONUNBUFFERED=1 \
+ARG GIT_SHA=unknown
+
+ENV GIT_SHA=${GIT_SHA} \
+    PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONPATH=/app \
     SCHEMA_PATH=/app/schema.sql \

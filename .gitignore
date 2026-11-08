@@ -55,3 +55,12 @@ bin/
 *.tfstate.*
 *.tfvars
 !*.tfvars.example
+
+# --- Terraform ---
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+*.tfvars
+!*.tfvars.example
+.terraform.lock.hcl.bak

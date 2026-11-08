@@ -324,7 +324,6 @@ async def main() -> None:
             raise RuntimeError("descubrimiento incompleto, no se puede generar carga útil")
 
         workers: list[asyncio.Task] = []
-        total_phase = RAMP_SECONDS + HOLD_SECONDS
         t0 = time.perf_counter()
         # Tope de requests en vuelo: con latencias sanas (ms) hay un puñado
         # concurrente y el tope no muerde; si el backend se atasca, frena el

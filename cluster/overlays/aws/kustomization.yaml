@@ -1,0 +1,54 @@
+# Overlay para EKS. Cambia respecto a la base (pensada para kind):
+#   - StorageClass gp2 (EBS) en lugar de "standard"
+#   - HPA del backend con tope 8 (3 nodos t3.medium no admiten 10 con holgura)
+#   - Límites de tasa más altos: la prueba de carga sale de UNA sola IP y, con
+#     los valores de la base, Traefik respondería 429 antes de que suba la CPU
+#   - El ConfigMap de semillas no se aplica: lo crea scripts/deploy-aws.sh
+#     (supera el límite de 256 KiB de `kubectl apply`)
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+  - monitoring-netpol.yaml
+
+patches:
+  - target: { kind: StatefulSet, name: kuber-postgres }
+    patch: |-
+      - op: replace
+        path: /spec/volumeClaimTemplates/0/spec/storageClassName
+        value: gp2
+
+  - target: { kind: HorizontalPodAutoscaler, name: kuber-backend-hpa }
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicas
+        value: 8
+
+  - target: { kind: ConfigMap, name: kuber-app-config }
+    patch: |-
+      - op: replace
+        path: /data/RATE_LIMIT_REQUESTS
+        value: "600000"
+
+  - target: { group: traefik.io, kind: Middleware, name: kuber-ratelimit }
+    patch: |-
+      - op: replace
+        path: /spec/rateLimit/average
+        value: 3000
+      - op: replace
+        path: /spec/rateLimit/burst
+        value: 6000
+
+  - target: { group: traefik.io, kind: Middleware, name: kuber-inflight }
+    patch: |-
+      - op: replace
+        path: /spec/inFlightReq/amount
+        value: 2000
+
+  - target: { kind: ConfigMap, name: kuber-seed-data }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: kuber-seed-data

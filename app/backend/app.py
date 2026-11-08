@@ -816,6 +816,13 @@ async def seed_summary_ep():
     return {"pod": POD_NAME, **summary}
 
 
+@app.get(f"{API_PREFIX}/version")
+async def version():
+    """Versión desplegada. GIT_SHA lo inyecta el pipeline de CD al construir la
+    imagen; sirve para comprobar en la demo que el cambio llegó al clúster."""
+    return {"version": app.version, "commit": _cfg("GIT_SHA", "unknown"), "pod": POD_NAME}
+
+
 @app.get(f"{API_PREFIX}/whoami")
 async def whoami():
     """Devuelve qué réplica respondió. Sirve para verificar el balanceo del

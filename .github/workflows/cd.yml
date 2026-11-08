@@ -1,0 +1,117 @@
+name: CD
+
+# Se ejecuta solo cuando el CI termina EN VERDE sobre main (un test roto en CI
+# impide que llegue aquí), o a mano desde la pestaña Actions.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cd
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: chaos-lab-eks
+  ECR_PROJECT: chaos-lab
+
+jobs:
+  publish:
+    name: Construir y publicar imágenes en ECR
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      registry: ${{ steps.ecr.outputs.registry }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - id: meta
+        run: echo "tag=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Credenciales del Learner Lab: viven en GitHub Secrets y caducan con la
+      # sesión del laboratorio (hay que actualizarlas en cada sesión).
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build y push (backend, frontend)
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for img in backend:app/backend frontend:app/frontend; do
+            name="${img%%:*}"; ctx="${img#*:}"
+            docker buildx build "$ctx" \
+              --tag "$REGISTRY/$ECR_PROJECT/$name:$TAG" \
+              --tag "$REGISTRY/$ECR_PROJECT/$name:latest" \
+              --build-arg "GIT_SHA=$TAG" \
+              --push
+          done
+
+  deploy:
+    name: Desplegar en EKS y verificar
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: azure/setup-helm@v4
+
+      - name: kubeconfig
+        run: aws eks update-kubeconfig --region "$AWS_REGION" --name "$CLUSTER_NAME"
+
+      - name: Desplegar
+        env:
+          IMAGE_TAG: ${{ needs.publish.outputs.tag }}
+          ECR_REGISTRY: ${{ needs.publish.outputs.registry }}
+        run: ./scripts/deploy-aws.sh
+
+      - name: Verificar disponibilidad (smoke test)
+        run: ./scripts/smoke-test.sh
+
+      # Si algo falla tras aplicar, se vuelve a la revisión anterior.
+      - name: Rollback automático
+        if: failure()
+        run: |
+          kubectl -n kuber-app rollout undo deploy/kuber-backend  || true
+          kubectl -n kuber-app rollout undo deploy/kuber-frontend || true
+          kubectl -n kuber-app rollout status deploy/kuber-backend --timeout=180s || true
+
+      - name: Resumen
+        if: always()
+        run: |
+          {
+            echo "### Despliegue"
+            echo "- Imagen: \`${{ needs.publish.outputs.tag }}\`"
+            echo "- URL: http://$(kubectl -n traefik get svc traefik -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2>/dev/null)"
+            echo '```'
+            kubectl -n kuber-app get deploy,hpa,pods -o wide 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

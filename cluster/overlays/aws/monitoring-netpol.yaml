@@ -1,0 +1,21 @@
+# Permite que Prometheus (namespace monitoring) lea /metrics del backend.
+# En EKS las NetworkPolicy solo se aplican si se activa el soporte del CNI; si
+# se activa, sin esta regla el default-deny bloquearía el scrape.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-to-backend
+  namespace: kuber-app
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: backend
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+          protocol: TCP

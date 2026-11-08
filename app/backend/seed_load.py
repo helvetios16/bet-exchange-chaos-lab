@@ -83,7 +83,6 @@ def seed_database(dsn: str, seed_dir: str = SEED_DIR, verbose: bool = True) -> d
                 continue
 
             col_list = ", ".join(cols)
-            placeholders = ", ".join(["%s"] * len(cols))
             # Cursor nuevo por tabla: el del TRUNCATE ya se cerró al salir de
             # su `with`. Reutilizarlo aquí levanta InterfaceError.
             with conn.cursor() as cur:
