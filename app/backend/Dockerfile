@@ -52,7 +52,7 @@ EXPOSE 8080
 
 # HEALTHCHECK del Dockerfile: se ignora en Kubernetes (ahi mandan las
 # startup/readiness/liveness probes), pero sirve para docker run local.
-HEALTHCHECK --interval=15s --timeout=3s --start-period=40s --retries=3 \
+HEALTHCHECK --interval=15s --timeout=10s --start-period=180s --retries=3 \
   CMD curl -fsS http://localhost:8080/health/live || exit 1
 
 # exec form + uvicorn como entrypoint: PID 1 es uvicorn y recibe SIGTERM

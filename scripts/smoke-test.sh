@@ -11,10 +11,12 @@ fi
 
 check() {
   local path="$1" expect="$2" code=""
-  for _ in $(seq 1 40); do
-    code="$(curl -s -o /dev/null -m 5 -w '%{http_code}' "${URL}${path}" || true)"
+  # 60 intentos x ~7s ~= 7 min por endpoint: con red lenta el balanceador
+  # y la primera respuesta de la app pueden demorar varios minutos.
+  for _ in $(seq 1 60); do
+    code="$(curl -s -o /dev/null -m 15 -w '%{http_code}' "${URL}${path}" || true)"
     if [ "$code" = "$expect" ]; then echo "OK   ${path} -> ${code}"; return 0; fi
-    sleep 6
+    sleep 7
   done
   echo "FALLA ${path} -> ${code} (esperado ${expect})"
   return 1

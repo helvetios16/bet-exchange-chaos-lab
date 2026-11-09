@@ -133,8 +133,8 @@ spec:
                 - exec pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB" -h 127.0.0.1
             initialDelaySeconds: 0
             periodSeconds: 3
-            timeoutSeconds: 5
-            failureThreshold: 40      # hasta 2 minutos de arranque
+            timeoutSeconds: 10
+            failureThreshold: 100     # hasta 5 minutos (red lenta / EBS frio)
           livenessProbe:
             exec:
               command:

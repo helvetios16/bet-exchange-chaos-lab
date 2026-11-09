@@ -34,7 +34,7 @@ for i in 1 2 3 4 5 6; do
   echo "    /events -> $r   |  $(kubectl -n kuber-app get pods -l app.kubernetes.io/name=backend --no-headers | awk '{print $2"/"$3"/r"$4}' | tr '\n' ' ')"
   sleep 8
 done
-kubectl -n kuber-data rollout status statefulset/kuber-postgres --timeout=180s
+kubectl -n kuber-data rollout status statefulset/kuber-postgres --timeout=300s
 echo "    Postgres recuperado. Reinicios del backend (deben ser 0 por esta causa):"
 kubectl -n kuber-app get pods -l app.kubernetes.io/name=backend --no-headers | awk '{print "    "$1"  reinicios="$4}'
 

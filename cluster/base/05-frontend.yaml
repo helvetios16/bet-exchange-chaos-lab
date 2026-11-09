@@ -105,8 +105,8 @@ spec:
               path: /healthz
               port: http
             periodSeconds: 2
-            timeoutSeconds: 2
-            failureThreshold: 30
+            timeoutSeconds: 5
+            failureThreshold: 90      # 180s: margen para pull/resolver lentos
           livenessProbe:
             # Un chequeo superficial: el proceso responde. NO valida el
             # backend, para no reiniciar el frontend si el backend cae.

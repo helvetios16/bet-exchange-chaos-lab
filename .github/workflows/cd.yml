@@ -102,7 +102,7 @@ jobs:
         run: |
           kubectl -n kuber-app rollout undo deploy/kuber-backend  || true
           kubectl -n kuber-app rollout undo deploy/kuber-frontend || true
-          kubectl -n kuber-app rollout status deploy/kuber-backend --timeout=180s || true
+          kubectl -n kuber-app rollout status deploy/kuber-backend --timeout=300s || true
 
       - name: Resumen
         if: always()

@@ -178,12 +178,15 @@ spec:
             # Protege el arranque lento. Hasta que pasa, liveness y readiness
             # estan DESACTIVADAS. Sin esto, un arranque de 40s con liveness
             # cada 15s = 3 reinicios = CrashLoopBackOff.
+            # Generoso (300s): con red lenta la primera carga de esquema +
+            # semillas (COPY bajo advisory lock) y el pull de la imagen
+            # pueden demorar mucho en un t3.medium frio.
             httpGet:
               path: /health/startup
               port: http
             periodSeconds: 3
-            timeoutSeconds: 2
-            failureThreshold: 30      # 90s de margen
+            timeoutSeconds: 5
+            failureThreshold: 100     # 300s de margen
           livenessProbe:
             # ¿El proceso esta VIVO? Si falla N veces seguidos -> restart.
             # Debe ser rapida y cheap. NO debe chequear dependencias externas
