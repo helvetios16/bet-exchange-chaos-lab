@@ -1,19 +1,22 @@
 name: CD
 
-# Se ejecuta solo cuando el CI termina EN VERDE sobre main (un test roto en CI
-# impide que llegue aquí), o a mano desde la pestaña Actions.
+# Se ejecuta SOLO cuando el CI termina EN VERDE (sobre PR o sobre main)
+# (un test roto en CI impide que llegue aquí), o a mano desde la pestaña.
+# Para que todo corra en el PR sin fusionar: workflow_run NO filtra rama,
+# así que el CD también se dispara en PRs de ramas del mismo repo.
+# OJO: GitHub NO pasa los secrets a workflows lanzados desde un FORK.
+# Este CD en PR solo funciona para ramas del mismo repo (no forks).
 on:
   workflow_run:
     workflows: [CI]
     types: [completed]
-    branches: [main]
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: cd
+  group: cd-${{ github.head_ref || github.ref }}
   cancel-in-progress: false
 
 env:
@@ -32,7 +35,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
 
       - id: meta
         run: echo "tag=$(git rev-parse --short=7 HEAD)" >> "$GITHUB_OUTPUT"
@@ -73,7 +76,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.event.workflow_run.head_sha || github.sha }}
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -91,6 +94,8 @@ jobs:
         env:
           IMAGE_TAG: ${{ needs.publish.outputs.tag }}
           ECR_REGISTRY: ${{ needs.publish.outputs.registry }}
+          PG_PASS: ${{ secrets.PG_PASS }}
+          PG_HOST: ${{ secrets.PG_HOST }}
         run: ./scripts/deploy-aws.sh
 
       - name: Verificar disponibilidad (smoke test)

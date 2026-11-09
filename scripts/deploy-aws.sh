@@ -59,17 +59,23 @@ helm upgrade --install traefik traefik/traefik \
 # --- 4. Secretos: se crean UNA vez con valores aleatorios (nada en git) --------
 log "secretos"
 # Postgres vive en EC2: su contraseña viene de Terraform (random_password).
-# Si no se encuentra (CD en GitHub sin terraform local), generá una y
-# asumí que el EC2 ya tiene esa misma (ver terraform outputs postgres_password).
-PG_PASS=""
-PG_HOST=""
-if [ -d infra/terraform ]; then
+# Orden de prioridad: env vars del CD > terraform output local > error.
+# Si no hay credenciales, fallar antes que inventar una password random
+# (que nunca coincidiría con el EC2): ese fallback anterior dejaba el
+# backend sin conectar. En GitHub hay que pasar PG_PASS/PG_HOST como secrets.
+PG_PASS="${PG_PASS:-}"
+PG_HOST="${PG_HOST:-}"
+if [ -z "$PG_PASS" ] && [ -d infra/terraform ]; then
   PG_PASS="$(terraform -chdir=infra/terraform output -raw postgres_password 2>/dev/null || true)"
+fi
+if [ -z "$PG_HOST" ] && [ -d infra/terraform ]; then
   PG_HOST="$(terraform -chdir=infra/terraform output -raw postgres_private_ip 2>/dev/null || true)"
 fi
-if [ -z "$PG_PASS" ]; then
-  PG_PASS="$(rand)"
-  PG_HOST="${DB_HOST:-kuber-postgres-client.kuber-data.svc.cluster.local}"
+if [ -z "$PG_PASS" ] || [ -z "$PG_HOST" ]; then
+  echo "ERROR: PG_PASS/PG_HOST no encontrados (ni env, ni terraform output)."
+  echo "       En CD: declaralos como secrets PG_PASS y PG_HOST."
+  echo "       En local: terraform apply primero y reintentá."
+  exit 1
 fi
 log "Postgres en EC2: ${PG_HOST}"
 if ! kubectl -n kuber-data get secret kuber-postgres-secret >/dev/null 2>&1; then
@@ -91,18 +97,12 @@ if ! kubectl -n kuber-app get configmap kuber-seed-data >/dev/null 2>&1; then
 fi
 
 # --- 6. Aplicación: overlay AWS con las imágenes de ECR -------------------------
-log "aplicación (imágenes ${ECR_REGISTRY}/${ECR_PROJECT}/*:${IMAGE_TAG})"
+log "aplicación (imágenes ${ECR_REGISTRY}/${ECR_PROJECT}/*:${IMAGE_TAG}, DB_HOST=${PG_HOST})"
 kubectl kustomize cluster/overlays/aws \
   | sed -e "s#image: kuber/backend:1.0.0#image: ${ECR_REGISTRY}/${ECR_PROJECT}/backend:${IMAGE_TAG}#" \
         -e "s#image: kuber/frontend:1.0.0#image: ${ECR_REGISTRY}/${ECR_PROJECT}/frontend:${IMAGE_TAG}#" \
+        -e "s#value: 127.0.0.1#value: ${PG_HOST}#g" \
   | kubectl apply -f -
-
-# Si Postgres corre en EC2, el overlay ya borró el StatefulSet. Apuntamos
-# el backend al EC2 por IP privada (nunca via Service de K8s).
-if [ -n "$PG_HOST" ] && [ "$PG_HOST" != "kuber-postgres-client.kuber-data.svc.cluster.local" ]; then
-  log "apuntando backend a EC2 ${PG_HOST}"
-  kubectl -n kuber-app set env deploy/kuber-backend DB_HOST="$PG_HOST" || true
-fi
 log "esperando el despliegue (timeouts largos por red lenta / pull de imagenes)"
 kubectl -n kuber-app rollout status deploy/kuber-backend  --timeout=900s
 kubectl -n kuber-app rollout status deploy/kuber-frontend --timeout=600s

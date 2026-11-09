@@ -193,29 +193,39 @@ resource "aws_instance" "postgres" {
     #!/bin/bash
     set -eux
     dnf install -y postgresql-server postgresql-contrib
-    /usr/share/postgresql-setup --initdb --encoding=UTF8
+    # user_data corre en CADA reboot: el initdb solo va una vez, la primera.
+    # Sin esto, stop/start borraría (o fallaría) con el cluster ya inicializado.
+    if [ ! -f /var/lib/pgsql/data/postgresql.conf ]; then
+      /usr/share/postgresql-setup --initdb --encoding=UTF8
+    fi
     systemctl enable postgresql
     systemctl start postgresql
     sudo -u postgres psql -c "CREATE USER kuber WITH PASSWORD '${random_password.pg_password.result}' LOGIN SUPERUSER;" || true
     sudo -u postgres psql -c "CREATE DATABASE kuber OWNER kuber;" || true
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE kuber TO kuber;" || true
-    # escucha en red privada de la VPC (pods EKS)
-    sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" /var/lib/pgsql/data/postgresql.conf
-    echo "host all all ${data.aws_vpc.default.cidr_block} md5" >> /var/lib/pgsql/data/pg_hba.conf
+    # escucha en red privada de la VPC (pods EKS) - idempotente
+    grep -q "listen_addresses = '\\*'" /var/lib/pgsql/data/postgresql.conf || sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" /var/lib/pgsql/data/postgresql.conf
+    grep -q "host all all ${data.aws_vpc.default.cidr_block} md5" /var/lib/pgsql/data/pg_hba.conf || echo "host all all ${data.aws_vpc.default.cidr_block} md5" >> /var/lib/pgsql/data/pg_hba.conf
     systemctl restart postgresql
     systemctl is-enabled postgresql
-    # --- Backup local del disco (aparte del EBS snapshot de Terraform) ---
+    # --- Backup local del disco (snapshot completo via cron aws cli) ---
     mkdir -p /var/backups/kuber
     chown postgres:postgres /var/backups/kuber
     cat > /usr/local/bin/kuber-pg-backup.sh <<'EOS'
     #!/bin/bash
     # pg_dump diario + rotación 7 días. Corre en el mismo disco: sirve si
-    # se corrompe la BD, no si se pierde el volumen entero (para eso está
-    # el snapshot EBS de Terraform).
+    # se corrompe la BD, no si se pierde el volumen entero.
     set -euo pipefail
-    DUMP=/var/backups/kuber/kuber-$(date +%Y-%m-%d).sql.gz
-    sudo -u postgres pg_dump -Fc kuber | gzip > $DUMP
-    find /var/backups/kuber -name 'kuber-*.sql.gz' -mtime +7 -delete
+    DUMP=/var/backups/kuber/kuber-$(date +%Y-%m-%d).dump
+    sudo -u postgres pg_dump --format=custom kuber > $DUMP
+    find /var/backups/kuber -name 'kuber-*.dump' -mtime +7 -delete
+    # Snapshot EBS completo (con LabRole basta ec2:CreateSnapshot).
+    # Útil si se pierde el disco entero: `aws ec2 create-volume --snapshot-id ...`
+    VOL_ID=$(aws ec2 describe-volumes --filters Name=attachment.instance-id,Values=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || hostname) --query "Volumes[?Attachments[0].State=='attached'].VolumeId" --output text 2>/dev/null || echo "")
+    if [ -n "$VOL_ID" ]; then
+      AWS_REGION=$(aws ec2 describe-instance-attributes --instance-id $(cat /var/lib/cloud/data/instance-id 2>/dev/null || hostname) --attribute instanceType --query "InstanceType.Value" 2>/dev/null || echo "us-east-1")
+      aws ec2 create-snapshot --volume-id $VOL_ID --description "kuber backup $(date -u +%F)" >/dev/null 2>&1 || echo "snapshot failed, local dump ok" >&2
+    fi
     EOS
     chmod +x /usr/local/bin/kuber-pg-backup.sh
     echo "0 2 * * * root /usr/local/bin/kuber-pg-backup.sh" > /etc/cron.d/kuber-pg-backup
@@ -225,13 +235,11 @@ resource "aws_instance" "postgres" {
   tags = { Name = "${var.project}-postgres-ec2" }
 }
 
-# Snapshot inicial del disco raíz: si se termina la instancia por error,
-# el volumen queda huérfano pero los datos están en este snapshot.
-resource "aws_ebs_snapshot" "postgres_root" {
-  volume_id   = aws_instance.postgres.root_block_device[0].volume_id
-  description = "Snapshot inicial Postgres EC2 (backup)"
-  tags        = { Name = "${var.project}-postgres-snapshot" }
-}
+# Backup: snapshot programado por cron dentro del EC2 (ver user_data).
+# No se crea un snapshot en el apply: en ese momento el disco está vacío
+# y sería inútil. El disco root con delete_on_termination=false ya
+# sobrevive a stop/terminate; los snapshots diarios (aws ec2 create-snapshot)
+# y los pg_dump locales (/var/backups/kuber) son el respaldo real.
 
 # Conserva solo las 10 imágenes más recientes (ahorra almacenamiento).
 resource "aws_ecr_lifecycle_policy" "images" {
