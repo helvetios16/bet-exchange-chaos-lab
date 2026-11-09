@@ -153,7 +153,7 @@ def _seed_once() -> None:
                 _lock_acquired = True
                 log.info("dataset cargado", extra=counts)
             finally:
-                cur.execute("SELECT pg_advisory_unlock(918_273_645)")
+                cur.execute("SELECT pg_advisory_unlock(918273645)")
 
 
 def _dsn() -> str:

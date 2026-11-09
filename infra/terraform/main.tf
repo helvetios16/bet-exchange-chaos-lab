@@ -170,11 +170,11 @@ resource "aws_security_group" "postgres" {
 }
 
 resource "aws_instance" "postgres" {
-  ami                    = var.db_ami_id
-  instance_type          = var.db_instance_type
-  subnet_id              = data.aws_subnets.selected.ids[0]
-  vpc_security_group_ids = [aws_security_group.postgres.id]
-  monitoring             = false
+  ami                     = var.db_ami_id
+  instance_type           = var.db_instance_type
+  subnet_id               = data.aws_subnets.selected.ids[0]
+  vpc_security_group_ids  = [aws_security_group.postgres.id]
+  monitoring              = false
   disable_api_termination = false
 
   root_block_device {
@@ -182,7 +182,7 @@ resource "aws_instance" "postgres" {
     volume_type           = "gp2"
     delete_on_termination = false
     encrypted             = false
-    tags = { Name = "${var.project}-postgres" }
+    tags                  = { Name = "${var.project}-postgres" }
   }
 
   user_data = <<-EOT
