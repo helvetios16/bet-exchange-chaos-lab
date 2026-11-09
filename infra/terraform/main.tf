@@ -85,6 +85,9 @@ resource "aws_eks_node_group" "app" {
   instance_types  = [var.node_instance_type]
   capacity_type   = "ON_DEMAND"
   disk_size       = 20
+  # Bottlerocket no usa nodeadm (que es el que llama a EC2 DescribeInstances
+  # bloqueado por la SCP del Lab). AL2023 crashea justo ahí, Bottlerocket no.
+  ami_type = "BOTTLEROCKET_x86_64"
 
   scaling_config {
     desired_size = var.node_count
@@ -137,15 +140,8 @@ resource "aws_ecr_repository" "images" {
 # Solución: un EC2 t3.micro en la misma VPC cuyo disco raíz (/dev/xvda)
 # es un volumen EBS. Si apagás la instancia (stop), el disco queda guardado.
 # Los pods de EKS llegan por IP privada (ver no ingress 0.0.0.0/0).
-data "aws_ami" "amazon_linux2" {
-  most_recent = true
-  owners      = ["amazon"]
-
-  filter {
-    name   = "name"
-    values = ["amzn2-ami-hvm-2.0.*.x86_64-gp2"]
-  }
-}
+# AMI fijada vía variable porque el Learner Lab no permite describe-images
+# (data.aws_ami devuelve "Your query returned no results" con cualquier filtro).
 
 resource "random_password" "pg_password" {
   length  = 24
@@ -174,7 +170,7 @@ resource "aws_security_group" "postgres" {
 }
 
 resource "aws_instance" "postgres" {
-  ami                    = data.aws_ami.amazon_linux2.id
+  ami                    = var.db_ami_id
   instance_type          = var.db_instance_type
   subnet_id              = data.aws_subnets.selected.ids[0]
   vpc_security_group_ids = [aws_security_group.postgres.id]

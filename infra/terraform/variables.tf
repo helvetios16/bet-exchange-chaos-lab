@@ -54,3 +54,10 @@ variable "db_root_volume_size" {
   type        = number
   default     = 20
 }
+
+variable "db_ami_id" {
+  description = "AMI de Amazon Linux 2023 x86_64. Se pone fijo porque el data aws_ami no devuelve resultados en el Learner Lab (describe-images restringido)."
+  type        = string
+  # ami-0ff8a91507f77f867 = al2023-ami-2023.5.2 x86_64 en us-east-1 (verificado ene 2025, actualizar si es de otra región)
+  default = "ami-0ff8a91507f77f867"
+}
