@@ -1,3 +1,160 @@
+# Proyecto Integrador de Cloud Computing — Guía del equipo
+
+> **Si acabas de llegar al repo, empieza aquí.** Esta sección explica qué hicimos
+> sobre la aplicación original, cómo está organizado y cómo probarlo. Debajo
+> (a partir de «Documentación original del laboratorio») está el README de la
+> aplicación base, que sigue siendo válido para entender el dominio.
+
+## 1. ¿De qué va?
+
+La aplicación base es un **simulador de un exchange de apuestas** (FastAPI +
+nginx + PostgreSQL, con datos inventados) que ya corría en Kubernetes local con
+`kind`. Para el curso de **Cloud Computing** la llevamos a un ciclo completo
+cloud-native en **AWS**:
+
+```
+Código ──► PR en GitHub ──► CI (lint + tests + build)
+                               │  verde en main
+                               ▼
+                       CD ──► Amazon ECR (imagen:SHA) ──► Amazon EKS
+                                                             │
+        Usuario ──► Balanceador AWS ──► Traefik ──► backend ×2..8 (HPA) ──► PostgreSQL
+                                              └──► frontend ×2..6 (HPA)
+
+        Prometheus + Grafana ◄── métricas de la app, pods, CPU y memoria
+        Terraform crea y destruye la infraestructura (EKS, nodos, ECR)
+```
+
+La propiedad que se vigila en todas las pruebas es **`drift = 0`**: el saldo de
+`wallets.available` debe coincidir siempre con la suma del ledger. Si una
+apuesta, una liquidación o un fallo pierde o inventa dinero, `drift` deja de
+ser 0.
+
+## 2. Estado actual (sé honesto al presentar)
+
+| Parte | Estado |
+|---|---|
+| Tests unitarios (41) | ✅ pasan |
+| Tests de integración (17, con PostgreSQL real) | ✅ pasan en local |
+| Análisis estático (ruff) | ✅ pasa |
+| `terraform validate` | ✅ válido |
+| CI en GitHub Actions | ⏳ escrito, aún no ejecutado en GitHub |
+| Infraestructura en AWS (EKS, ECR) | ⏳ no creada todavía |
+| CD, despliegue, HPA con carga, Grafana | ⏳ escritos, sin ejecutar contra AWS |
+| Informe técnico | ⏳ borrador en `docs/INFORME.md` (faltan resultados reales) |
+
+Todo lo marcado ⏳ está implementado pero **no se ha probado de punta a punta**;
+no hay que presentarlo como funcionando hasta tener evidencia real.
+
+## 3. ¿Dónde está cada requisito del profesor?
+
+| Requisito | Qué hicimos | Dónde |
+|---|---|---|
+| 4.1 Git, ramas, PRs, documentación | Una rama por fase y PR hacia `main` | este repo, `docs/RUNBOOK-AWS.md` |
+| 4.2 Testing | pytest: unitarias + integración, reporte JUnit y cobertura | `tests/unit/`, `tests/integration/` |
+| 4.3 Containerization | Dockerfiles multi-stage sin root; imágenes versionadas por SHA | `app/*/Dockerfile`, `cd.yml` |
+| 4.4 Infrastructure as Code | Terraform: EKS, nodos, EBS CSI, repositorios ECR | `infra/terraform/` |
+| 4.5 Integración continua | ruff → pytest (con Postgres) → build de imágenes | `.github/workflows/ci.yml` |
+| 4.6 Entrega continua | build, push a ECR, despliegue, smoke test, rollback | `.github/workflows/cd.yml`, `scripts/deploy-aws.sh` |
+| 4.7 Orquestación | Deployments, Services, probes, recursos, secretos, PDB | `cluster/base/`, `cluster/overlays/aws/` |
+| 4.8 Autoscaling | HPA (CPU 70 %, memoria 80 %), prueba de carga con k6 | `tests/load/k6-load.js`, `scripts/demo-hpa.sh` |
+| 4.9 Monitoring | Prometheus + Grafana con dashboard propio | `monitoring/` |
+| Recuperación ante fallos | Matar pods de backend y de Postgres con tráfico | `scripts/demo-chaos.sh` |
+| Seguridad y costos | Secretos aleatorios fuera de git, etiquetas, script de destrucción | `scripts/aws-down.sh` |
+
+## 4. Mapa de carpetas (lo nuevo)
+
+```
+.github/workflows/   ci.yml (pruebas) y cd.yml (publicar y desplegar)
+infra/terraform/     infraestructura como código para AWS
+cluster/base/        manifiestos Kubernetes originales (funcionan en kind)
+cluster/overlays/aws/ ajustes para EKS (StorageClass gp2, HPA máx. 8, límites de tasa)
+monitoring/          Prometheus, Grafana y su dashboard
+scripts/             aws-up.sh, deploy-aws.sh, smoke-test.sh, aws-down.sh, demo-*.sh
+tests/unit/          pruebas sin base de datos
+tests/integration/   pruebas con PostgreSQL real
+tests/load/k6-load.js prueba de carga oficial (k6)
+docs/RUNBOOK-AWS.md  crear, actualizar y destruir el entorno paso a paso
+docs/INFORME.md      informe técnico (borrador)
+```
+
+## 5. Cómo probar el código en tu PC (sin AWS, sin costo)
+
+Necesitas Python 3.12 y, para los tests de integración, Docker.
+
+```bash
+python -m venv .venv && source .venv/bin/activate     # en Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+ruff check app tests
+pytest tests/unit                                      # 41 tests, no necesitan nada más
+```
+
+Tests de integración (levantan un PostgreSQL temporal en el puerto 55432):
+
+```bash
+docker run -d --name pg-test -e POSTGRES_USER=kuber -e POSTGRES_PASSWORD=kuber \
+  -e POSTGRES_DB=kuber_test -p 55432:5432 postgres:16
+REQUIRE_DB=1 TEST_DB_HOST=127.0.0.1 TEST_DB_PORT=55432 pytest tests/integration
+docker rm -f pg-test
+```
+
+Sin `REQUIRE_DB=1`, si no hay base de datos los tests de integración se saltan.
+En CI está activado, así que ahí **fallan** en vez de saltarse.
+
+## 6. Cómo desplegar en AWS (resumen)
+
+Guía completa y problemas conocidos: [`docs/RUNBOOK-AWS.md`](docs/RUNBOOK-AWS.md).
+
+1. Iniciar el **AWS Academy Learner Lab** y pegar las credenciales en
+   `~/.aws/credentials` (caducan cada ~4 h).
+2. `./scripts/aws-up.sh` crea EKS + ECR con Terraform (12–18 min).
+3. Guardar `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` y `AWS_SESSION_TOKEN`
+   como *secrets* del repo en GitHub (**nunca** en el código).
+4. Merge a `main` → el CI pasa → el workflow **CD** publica y despliega.
+5. Al terminar, **siempre**: `./scripts/aws-down.sh`.
+
+### ⚠️ Costos
+
+El Learner Lab tiene un presupuesto limitado (consulta *Used $X of $Y* al
+empezar). El entorno encendido cuesta ≈ **0,25 USD por hora**. Un clúster
+olvidado encendido gasta ≈ 6 USD al día. **Destruir siempre al terminar.**
+Los scripts de destrucción listan al final lo que pudiera seguir cobrando.
+
+## 7. Flujo de trabajo del equipo
+
+- Una rama por tarea (`feat/…`, `fix/…`) y un **Pull Request** hacia `main`.
+- Un PR solo se fusiona con el **CI en verde**.
+- Nada de credenciales en commits. Los secretos van en GitHub Secrets.
+- No subir `*.tfstate` ni `.terraform/` (ya están en `.gitignore`).
+
+## 8. Guion de la demo final (15 min)
+
+1. Cambiar algo visible (por ejemplo la versión de `GET /api/v1/version`).
+2. Hacer push y abrir PR.
+3. Mostrar el CI ejecutándose.
+4. Mostrar la imagen nueva en ECR.
+5. Mostrar el despliegue automático en Kubernetes.
+6. Abrir la app y comprobar `/api/v1/version`.
+7. Lanzar `k6 run -e BASE_URL=http://<balanceador> tests/load/k6-load.js`.
+8. Mostrar el HPA (`scripts/demo-hpa.sh`) y el dashboard de Grafana.
+9. Explicar cómo se aprovisiona y cómo se reproduce (`aws-up.sh`, `aws-down.sh`).
+
+La spec pide **evidencia real de ejecución**, no solo capturas de código.
+
+## 9. Limitaciones conocidas
+
+- El Learner Lab no permite crear roles IAM: se reutiliza `LabRole`, así que no
+  se aplica mínimo privilegio completo (se explica en el informe).
+- Las `NetworkPolicy` existen pero EKS no las aplica sin activar soporte en el
+  CNI.
+- Hallazgos menores de la app (sin corregir): los 500 de excepciones no
+  controladas no se cuentan en las métricas, y `settle_bet` tiene un `return`
+  duplicado e inalcanzable.
+
+---
+
+# Documentación original del laboratorio
+
 # bet-exchange-chaos-lab
 
 Entorno de laboratorio de **Apuesta Total (simulado)** sobre Kubernetes, para
