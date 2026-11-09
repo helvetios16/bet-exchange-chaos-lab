@@ -5,6 +5,10 @@
 > (a partir de «Documentación original del laboratorio») está el README de la
 > aplicación base, que sigue siendo válido para entender el dominio.
 
+> **¿Quieres hacerlo funcionar?** Sigue el paso a paso detallado en
+> [`docs/TUTORIAL-EQUIPO.md`](docs/TUTORIAL-EQUIPO.md) (instalación, tests,
+> AWS, despliegue, evidencias y problemas frecuentes).
+
 ## 1. ¿De qué va?
 
 La aplicación base es un **simulador de un exchange de apuestas** (FastAPI +
