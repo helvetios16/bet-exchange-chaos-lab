@@ -12,11 +12,81 @@ resources:
   - monitoring-netpol.yaml
 
 patches:
+  # Postgres en EC2 (infra/terraform) en vez de StatefulSet en EKS:
+  # el Learner Lab no permite instalar aws-ebs-csi-driver, así que no hay
+  # PVC persistente. El disco raíz del EC2 (EBS) sí persiste en stop.
+  # Se borran StatefulSet + Services de Postgres y se apunta DB_HOST al EC2.
   - target: { kind: StatefulSet, name: kuber-postgres }
     patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: StatefulSet
+      metadata:
+        name: kuber-postgres
+        namespace: kuber-data
+
+  - target: { kind: Service, name: kuber-postgres }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: kuber-postgres
+        namespace: kuber-data
+
+  - target: { kind: Service, name: kuber-postgres-client }
+    patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: kuber-postgres-client
+        namespace: kuber-data
+
+  - target: { kind: PodDisruptionBudget, name: kuber-postgres-pdb }
+    patch: |-
+      $patch: delete
+      apiVersion: policy/v1
+      kind: PodDisruptionBudget
+      metadata:
+        name: kuber-postgres-pdb
+        namespace: kuber-data
+
+  - target: { kind: NetworkPolicy, name: allow-postgres-from-backend }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: allow-postgres-from-backend
+        namespace: kuber-data
+
+  - target: { kind: NetworkPolicy, name: default-deny-all, namespace: kuber-data }
+    patch: |-
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: default-deny-all
+        namespace: kuber-data
+
+  - target: { kind: Deployment, name: kuber-backend }
+    patch: |-
       - op: replace
-        path: /spec/volumeClaimTemplates/0/spec/storageClassName
-        value: gp2
+        path: /spec/template/spec/containers/0/env/0/value
+        value: 127.0.0.1
+
+  - target: { kind: NetworkPolicy, name: allow-backend }
+    patch: |-
+      - op: replace
+        path: /spec/egress/0
+        value:
+          to:
+            - ipBlock:
+                cidr: 0.0.0.0/0
+          ports:
+            - protocol: TCP
+              port: 5432
 
   - target: { kind: HorizontalPodAutoscaler, name: kuber-backend-hpa }
     patch: |-

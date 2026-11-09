@@ -129,6 +129,110 @@ resource "aws_ecr_repository" "images" {
   }
 }
 
+# -----------------------------------------------------------------------------
+# Postgres en EC2 aparte (persistencia real sin necesitar el addon EBS CSI)
+# -----------------------------------------------------------------------------
+# El Learner Lab no permite instalar aws-ebs-csi-driver (LabRole no tiene
+# iam:PassRole para el addon). Sin CSI no hay PVC persistente en EKS.
+# Solución: un EC2 t3.micro en la misma VPC cuyo disco raíz (/dev/xvda)
+# es un volumen EBS. Si apagás la instancia (stop), el disco queda guardado.
+# Los pods de EKS llegan por IP privada (ver no ingress 0.0.0.0/0).
+data "aws_ami" "amazon_linux2" {
+  most_recent = true
+  owners      = ["amazon"]
+
+  filter {
+    name   = "name"
+    values = ["amzn2-ami-hvm-2.0.*.x86_64-gp2"]
+  }
+}
+
+resource "random_password" "pg_password" {
+  length  = 24
+  special = false
+}
+
+resource "aws_security_group" "postgres" {
+  name        = "${var.project}-postgres-sg"
+  description = "Postgres en EC2: solo desde la VPC (pods EKS)"
+  vpc_id      = data.aws_vpc.default.id
+
+  ingress {
+    description = "Postgres desde VPC"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [data.aws_vpc.default.cidr_block]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_instance" "postgres" {
+  ami                    = data.aws_ami.amazon_linux2.id
+  instance_type          = var.db_instance_type
+  subnet_id              = data.aws_subnets.selected.ids[0]
+  vpc_security_group_ids = [aws_security_group.postgres.id]
+  monitoring             = false
+  disable_api_termination = false
+
+  root_block_device {
+    volume_size           = var.db_root_volume_size
+    volume_type           = "gp2"
+    delete_on_termination = false
+    encrypted             = false
+    tags = { Name = "${var.project}-postgres" }
+  }
+
+  user_data = <<-EOT
+    #!/bin/bash
+    set -eux
+    dnf install -y postgresql-server postgresql-contrib
+    /usr/share/postgresql-setup --initdb --encoding=UTF8
+    systemctl enable postgresql
+    systemctl start postgresql
+    sudo -u postgres psql -c "CREATE USER kuber WITH PASSWORD '${random_password.pg_password.result}' LOGIN SUPERUSER;" || true
+    sudo -u postgres psql -c "CREATE DATABASE kuber OWNER kuber;" || true
+    sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE kuber TO kuber;" || true
+    # escucha en red privada de la VPC (pods EKS)
+    sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" /var/lib/pgsql/data/postgresql.conf
+    echo "host all all ${data.aws_vpc.default.cidr_block} md5" >> /var/lib/pgsql/data/pg_hba.conf
+    systemctl restart postgresql
+    systemctl is-enabled postgresql
+    # --- Backup local del disco (aparte del EBS snapshot de Terraform) ---
+    mkdir -p /var/backups/kuber
+    chown postgres:postgres /var/backups/kuber
+    cat > /usr/local/bin/kuber-pg-backup.sh <<'EOS'
+    #!/bin/bash
+    # pg_dump diario + rotación 7 días. Corre en el mismo disco: sirve si
+    # se corrompe la BD, no si se pierde el volumen entero (para eso está
+    # el snapshot EBS de Terraform).
+    set -euo pipefail
+    DUMP=/var/backups/kuber/kuber-$(date +%Y-%m-%d).sql.gz
+    sudo -u postgres pg_dump -Fc kuber | gzip > $DUMP
+    find /var/backups/kuber -name 'kuber-*.sql.gz' -mtime +7 -delete
+    EOS
+    chmod +x /usr/local/bin/kuber-pg-backup.sh
+    echo "0 2 * * * root /usr/local/bin/kuber-pg-backup.sh" > /etc/cron.d/kuber-pg-backup
+    /usr/local/bin/kuber-pg-backup.sh
+  EOT
+
+  tags = { Name = "${var.project}-postgres-ec2" }
+}
+
+# Snapshot inicial del disco raíz: si se termina la instancia por error,
+# el volumen queda huérfano pero los datos están en este snapshot.
+resource "aws_ebs_snapshot" "postgres_root" {
+  volume_id   = aws_instance.postgres.root_block_device[0].volume_id
+  description = "Snapshot inicial Postgres EC2 (backup)"
+  tags        = { Name = "${var.project}-postgres-snapshot" }
+}
+
 # Conserva solo las 10 imágenes más recientes (ahorra almacenamiento).
 resource "aws_ecr_lifecycle_policy" "images" {
   for_each   = aws_ecr_repository.images

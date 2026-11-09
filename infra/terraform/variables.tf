@@ -37,5 +37,20 @@ variable "node_count" {
 variable "enable_ebs_csi" {
   description = "Instala el driver EBS CSI (necesario para el volumen persistente de Postgres)."
   type        = bool
-  default     = true
+  # En Learner Lab el driver falla por permisos (LabRole no puede crear
+  # el addon aws-ebs-csi-driver). Por defecto va desactivado y Postgres
+  # corre en un EC2 aparte (ver main.tf), que sí persiste en EBS root.
+  default = false
+}
+
+variable "db_instance_type" {
+  description = "Tipo de instancia para el EC2 de Postgres."
+  type        = string
+  default     = "t3.micro"
+}
+
+variable "db_root_volume_size" {
+  description = "GB del disco raíz del EC2 de Postgres (persiste si se apaga la instancia)."
+  type        = number
+  default     = 20
 }

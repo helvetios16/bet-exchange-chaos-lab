@@ -58,15 +58,26 @@ helm upgrade --install traefik traefik/traefik \
 
 # --- 4. Secretos: se crean UNA vez con valores aleatorios (nada en git) --------
 log "secretos"
-if ! kubectl -n kuber-data get secret kuber-postgres-secret >/dev/null 2>&1; then
+# Postgres vive en EC2: su contraseña viene de Terraform (random_password).
+# Si no se encuentra (CD en GitHub sin terraform local), generá una y
+# asumí que el EC2 ya tiene esa misma (ver terraform outputs postgres_password).
+PG_PASS=""
+PG_HOST=""
+if [ -d infra/terraform ]; then
+  PG_PASS="$(terraform -chdir=infra/terraform output -raw postgres_password 2>/dev/null || true)"
+  PG_HOST="$(terraform -chdir=infra/terraform output -raw postgres_private_ip 2>/dev/null || true)"
+fi
+if [ -z "$PG_PASS" ]; then
   PG_PASS="$(rand)"
+  PG_HOST="${DB_HOST:-kuber-postgres-client.kuber-data.svc.cluster.local}"
+fi
+log "Postgres en EC2: ${PG_HOST}"
+if ! kubectl -n kuber-data get secret kuber-postgres-secret >/dev/null 2>&1; then
   kubectl -n kuber-data create secret generic kuber-postgres-secret \
     --from-literal=POSTGRES_PASSWORD="$PG_PASS" \
     --from-literal=POSTGRES_SUPERUSER_PASSWORD="$PG_PASS"
 fi
 if ! kubectl -n kuber-app get secret kuber-backend-secret >/dev/null 2>&1; then
-  PG_PASS="$(kubectl -n kuber-data get secret kuber-postgres-secret \
-    -o jsonpath='{.data.POSTGRES_PASSWORD}' | base64 -d)"
   kubectl -n kuber-app create secret generic kuber-backend-secret \
     --from-literal=DB_PASSWORD="$PG_PASS" \
     --from-literal=ADMIN_TOKEN="$(rand)"
@@ -86,8 +97,13 @@ kubectl kustomize cluster/overlays/aws \
         -e "s#image: kuber/frontend:1.0.0#image: ${ECR_REGISTRY}/${ECR_PROJECT}/frontend:${IMAGE_TAG}#" \
   | kubectl apply -f -
 
+# Si Postgres corre en EC2, el overlay ya borró el StatefulSet. Apuntamos
+# el backend al EC2 por IP privada (nunca via Service de K8s).
+if [ -n "$PG_HOST" ] && [ "$PG_HOST" != "kuber-postgres-client.kuber-data.svc.cluster.local" ]; then
+  log "apuntando backend a EC2 ${PG_HOST}"
+  kubectl -n kuber-app set env deploy/kuber-backend DB_HOST="$PG_HOST" || true
+fi
 log "esperando el despliegue (timeouts largos por red lenta / pull de imagenes)"
-kubectl -n kuber-data rollout status statefulset/kuber-postgres --timeout=900s
 kubectl -n kuber-app rollout status deploy/kuber-backend  --timeout=900s
 kubectl -n kuber-app rollout status deploy/kuber-frontend --timeout=600s
 
