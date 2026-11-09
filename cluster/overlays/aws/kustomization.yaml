@@ -83,7 +83,7 @@ patches:
         value:
           to:
             - ipBlock:
-                cidr: 10.0.0.0/16
+                cidr: 172.31.0.0/16
           ports:
             - protocol: TCP
               port: 5432

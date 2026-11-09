@@ -188,20 +188,25 @@ resource "aws_instance" "postgres" {
   user_data = <<-EOT
     #!/bin/bash
     set -eux
-    dnf install -y postgresql-server postgresql-contrib
-    # user_data corre en CADA reboot: el initdb solo va una vez, la primera.
-    # Sin esto, stop/start borraría (o fallaría) con el cluster ya inicializado.
-    if [ ! -f /var/lib/pgsql/data/postgresql.conf ]; then
-      /usr/share/postgresql-setup --initdb --encoding=UTF8
-    fi
+    # Ubuntu 22.04 LTS: postgresql viene por apt, no por dnf
+    apt-get update
+    DEBIAN_FRONTEND=noninteractive apt-get install -y postgresql postgresql-contrib
+    # Ubuntu crea el cluster principal al instalar; no hace falta initdb
+    # (user_data corre en CADA reboot: nada de re-inicializar)
     systemctl enable postgresql
     systemctl start postgresql
     sudo -u postgres psql -c "CREATE USER kuber WITH PASSWORD '${random_password.pg_password.result}' LOGIN SUPERUSER;" || true
     sudo -u postgres psql -c "CREATE DATABASE kuber OWNER kuber;" || true
     sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE kuber TO kuber;" || true
     # escucha en red privada de la VPC (pods EKS) - idempotente
-    grep -q "listen_addresses = '\\*'" /var/lib/pgsql/data/postgresql.conf || sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" /var/lib/pgsql/data/postgresql.conf
-    grep -q "host all all ${data.aws_vpc.default.cidr_block} md5" /var/lib/pgsql/data/pg_hba.conf || echo "host all all ${data.aws_vpc.default.cidr_block} md5" >> /var/lib/pgsql/data/pg_hba.conf
+    PG_CONF="/etc/postgresql/14/main/postgresql.conf"
+    PG_HBA="/etc/postgresql/14/main/pg_hba.conf"
+    # Ubuntu puede tener 14 o 15 según la base; detectá la versión
+    if [ ! -f "$PG_CONF" ]; then PG_CONF=$(ls /etc/postgresql/*/main/postgresql.conf | head -n1); fi
+    if [ ! -f "$PG_HBA" ]; then PG_HBA=$(ls /etc/postgresql/*/main/pg_hba.conf | head -n1); fi
+    grep -q "listen_addresses = '\\*'" "$PG_CONF" || sed -i "s/^#listen_addresses = 'localhost'/listen_addresses = '*'/" "$PG_CONF"
+    # Ubuntu usa scram-sha-256 por defecto (PG14): el password guardado es scram, así que pg_hba tiene que pedir scram también
+    grep -q "host all all ${data.aws_vpc.default.cidr_block} scram-sha-256" "$PG_HBA" || echo "host all all ${data.aws_vpc.default.cidr_block} scram-sha-256" >> "$PG_HBA"
     systemctl restart postgresql
     systemctl is-enabled postgresql
     # --- Backup local del disco (snapshot completo via cron aws cli) ---
@@ -215,13 +220,6 @@ resource "aws_instance" "postgres" {
     DUMP=/var/backups/kuber/kuber-$(date +%Y-%m-%d).dump
     sudo -u postgres pg_dump --format=custom kuber > $DUMP
     find /var/backups/kuber -name 'kuber-*.dump' -mtime +7 -delete
-    # Snapshot EBS completo (con LabRole basta ec2:CreateSnapshot).
-    # Útil si se pierde el disco entero: `aws ec2 create-volume --snapshot-id ...`
-    VOL_ID=$(aws ec2 describe-volumes --filters Name=attachment.instance-id,Values=$(cat /var/lib/cloud/data/instance-id 2>/dev/null || hostname) --query "Volumes[?Attachments[0].State=='attached'].VolumeId" --output text 2>/dev/null || echo "")
-    if [ -n "$VOL_ID" ]; then
-      AWS_REGION=$(aws ec2 describe-instance-attributes --instance-id $(cat /var/lib/cloud/data/instance-id 2>/dev/null || hostname) --attribute instanceType --query "InstanceType.Value" 2>/dev/null || echo "us-east-1")
-      aws ec2 create-snapshot --volume-id $VOL_ID --description "kuber backup $(date -u +%F)" >/dev/null 2>&1 || echo "snapshot failed, local dump ok" >&2
-    fi
     EOS
     chmod +x /usr/local/bin/kuber-pg-backup.sh
     echo "0 2 * * * root /usr/local/bin/kuber-pg-backup.sh" > /etc/cron.d/kuber-pg-backup

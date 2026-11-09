@@ -141,7 +141,7 @@ def _seed_once() -> None:
         conn.autocommit = True
         with conn.cursor() as cur:
             # Espera hasta 120s a que otro pod termine de cargar.
-            cur.execute("SELECT pg_advisory_lock(918_273_645)")
+            cur.execute("SELECT pg_advisory_lock(918273645)")
             try:
                 cur.execute("SELECT count(*) FROM events")
                 (n,) = cur.fetchone()

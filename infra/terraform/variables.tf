@@ -56,8 +56,8 @@ variable "db_root_volume_size" {
 }
 
 variable "db_ami_id" {
-  description = "AMI de Amazon Linux 2023 x86_64. Se pone fijo porque el data aws_ami no devuelve resultados en el Learner Lab (describe-images restringido)."
+  description = "AMI para el EC2 de Postgres (Ubuntu 22.04 LTS). Se pone fijo porque data aws_ami no devuelve resultados para amazon en Learner Lab."
   type        = string
-  # ami-0ff8a91507f77f867 = al2023-ami-2023.5.2 x86_64 en us-east-1 (verificado ene 2025, actualizar si es de otra región)
-  default = "ami-0ff8a91507f77f867"
+  # Ubuntu Jammy 22.04 LTS 20260521 en us-east-1 (describe-images devuelve este ID)
+  default = "ami-02fd066b86800f60c"
 }
