@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Demo HPA - Chaos Lab</title>
+<style>
+  :root{color-scheme:dark;--bg:#0f172a;--panel:#1e293b;--muted:#94a3b8;--green:#22c55e;--orange:#fb923c}
+  *{box-sizing:border-box}body{font-family:system-ui,Arial,sans-serif;margin:0;background:var(--bg);color:#f1f5f9}
+  header{padding:16px 28px;background:var(--panel);display:flex;justify-content:space-between;align-items:center;gap:16px}
+  h1{margin:0;font-size:24px}.sub,.lbl{color:var(--muted);font-size:14px}main{padding:20px 28px;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:16px}
+  .card{background:var(--panel);border-radius:10px;padding:16px;min-width:0}.big{font-size:clamp(36px,6vw,64px);font-weight:bold;line-height:1}.lbl{margin-top:6px}
+  .wide{grid-column:span 4}.half{grid-column:span 2}button{font-size:16px;padding:12px 18px;border:0;border-radius:8px;cursor:pointer;margin:4px;font-weight:bold}
+  button:disabled{opacity:.55;cursor:wait}.go{background:var(--green);color:#052e16}.stop{background:#ef4444;color:white}.alt{background:#38bdf8;color:#082f49}
+  .pods{display:flex;flex-wrap:wrap;gap:10px}.pod{min-width:84px;padding:10px;text-align:center;border-radius:8px;background:#334155;font-size:13px}.pod.ok{background:#16a34a}.pod.wait{background:#ca8a04}.pod.term{background:#991b1b}
+  canvas{width:100%;height:280px;background:#0b1220;border-radius:8px}.hot{color:#f87171}.cool{color:#4ade80}#msg{margin:8px;color:var(--muted)}
+  @media(max-width:760px){main{grid-template-columns:repeat(2,minmax(0,1fr));padding:14px}.wide{grid-column:span 2}header{padding:14px;align-items:flex-start;flex-direction:column}}
+</style>
+</head>
+<body>
+<header><div><h1>Chaos Lab — Autoescalado HPA</h1><div class="sub" id="lb">Conectando al clúster…</div></div><div class="sub" id="clock"></div></header>
+<main>
+  <section class="card"><div class="big" id="rep">—</div><div class="lbl">Réplicas backend (mín <span id="min">2</span> / máx <span id="max">8</span>)</div></section>
+  <section class="card"><div class="big" id="des">—</div><div class="lbl">Réplicas deseadas por HPA</div></section>
+  <section class="card"><div class="big" id="cpu">—</div><div class="lbl">CPU media (objetivo 70 %)</div></section>
+  <section class="card"><div class="big" id="vus">0</div><div class="lbl">Usuarios virtuales de k6</div></section>
+  <section class="card wide">
+    <button class="go" id="spike" onclick="startLoad('spike')">Lanzar pico (~4,5 min; hasta 400 VUs)</button>
+    <button class="alt" id="ramp" onclick="startLoad('ramp')">Lanzar rampa (~8 min; hasta 300 VUs)</button>
+    <button class="stop" onclick="stopLoad()">Parar carga</button><span id="msg"></span>
+    <div class="lbl">La carga k6 se genera desde esta máquina y apunta al balanceador de AWS; puede consumir recursos y generar coste.</div>
+  </section>
+  <section class="card wide"><div class="lbl" style="margin:0 0 8px">CPU (naranja, objetivo 70 %) y réplicas (verde)</div><canvas id="chart" width="1600" height="280"></canvas></section>
+  <section class="card wide"><div class="lbl" style="margin:0 0 10px">Pods backend: verde=listo, amarillo=arrancando, rojo=terminando</div><div class="pods" id="pods"></div></section>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+async function send(path){const response=await fetch(path,{method:'POST'});return response.json()}
+async function startLoad(profile){$('msg').textContent='Iniciando k6…';$('spike').disabled=$('ramp').disabled=true;try{const r=await send('/api/load/start?profile='+profile);$('msg').textContent=r.result}catch(e){$('msg').textContent='No se pudo contactar con la demo'}finally{$('spike').disabled=$('ramp').disabled=false}}
+async function stopLoad(){try{const r=await send('/api/load/stop');$('msg').textContent=r.result}catch(e){$('msg').textContent='No se pudo contactar con la demo'}}
+function draw(samples){const c=$('chart'),g=c.getContext('2d'),W=c.width,H=c.height,m=40;g.clearRect(0,0,W,H);g.strokeStyle='#334155';g.fillStyle='#94a3b8';g.font='14px Arial';
+  for(let v=0;v<=8;v+=2){const y=H-m-(H-2*m)*v/8;g.beginPath();g.moveTo(m,y);g.lineTo(W-m,y);g.stroke();g.fillText(v,8,y+4)}
+  const yCpu=v=>H-m-(H-2*m)*Math.min(v||0,200)/200;g.strokeStyle='#fff';g.setLineDash([4,6]);g.beginPath();g.moveTo(m,yCpu(70));g.lineTo(W-m,yCpu(70));g.stroke();g.setLineDash([]);
+  if(samples.length<2)return;const n=samples.length,x=i=>m+(W-2*m)*i/(n-1);g.lineWidth=3;g.strokeStyle='#fb923c';g.beginPath();samples.forEach((p,i)=>i?g.lineTo(x(i),yCpu(p[2])):g.moveTo(x(i),yCpu(p[2])));g.stroke();
+  g.strokeStyle='#22c55e';g.beginPath();samples.forEach((p,i)=>{const y=H-m-(H-2*m)*p[1]/8;if(i===0)g.moveTo(x(i),y);else g.lineTo(x(i),y)});g.stroke()}
+async function tick(){try{const s=await (await fetch('/api/status',{cache:'no-store'})).json();$('lb').textContent=s.lb?'Balanceador AWS: http://'+s.lb:'Esperando balanceador…';$('clock').textContent=new Date().toLocaleTimeString()+(s.error?' | '+s.error:'');
+  if(s.hpa){$('rep').textContent=s.hpa.current;$('des').textContent=s.hpa.desired;$('min').textContent=s.hpa.min;$('max').textContent=s.hpa.max;$('cpu').textContent=s.hpa.cpu==null?'—':s.hpa.cpu+'%';$('cpu').className='big '+(s.hpa.cpu>70?'hot':'cool')}
+  $('vus').textContent=s.load.vus;$('pods').innerHTML=s.pods.map(p=>`<div class="pod ${p.terminating?'term':p.ready?'ok':'wait'}">${p.name}</div>`).join('')||'No se ven pods';draw(s.history)}catch(e){$('clock').textContent='Sin conexión con el servidor local'}}
+tick();setInterval(tick,3000);
+</script>
+</body>
+</html>

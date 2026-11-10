@@ -199,6 +199,21 @@ no responde, y el frontend está haciendo exactamente lo que debe.
 
 ---
 
+## Demo visual de concurrencia en AWS (HPA)
+
+Para una demostración interactiva de las réplicas, la CPU y los pods mientras se genera
+carga real contra AWS, sigue [`docs/DEMO-UI.md`](DEMO-UI.md). Inicia desde la raíz:
+
+```bash
+aws eks update-kubeconfig --region us-east-1 --name chaos-lab-eks
+python3 scripts/demo-ui/server.py
+```
+
+Abre <http://localhost:8099> y pulsa **Lanzar rampa** para una prueba gradual de k6.
+La UI corre en tu laptop; `kubectl` observa EKS y k6 envía tráfico al LoadBalancer de AWS.
+No es lo mismo que abrir Grafana: esta pantalla también tiene controles para iniciar/parar
+la concurrencia.
+
 ## Capa 4 — Una carga pequeña primero
 
 No empezar por `make test-stress`. Primero algo que quepa en una pantalla:

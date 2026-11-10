@@ -75,6 +75,8 @@ cluster/base/        manifiestos Kubernetes originales (funcionan en kind)
 cluster/overlays/aws/ ajustes para EKS (StorageClass gp2, HPA máx. 8, límites de tasa)
 monitoring/          Prometheus, Grafana y su dashboard
 scripts/             aws-up.sh, deploy-aws.sh, smoke-test.sh, aws-down.sh, demo-*.sh
+scripts/demo-ui/     panel HTML local para concurrencia, CPU, pods y HPA de AWS
+docs/DEMO-UI.md      conectar y usar la demo visual del HPA/k6 contra EKS
 tests/unit/          pruebas sin base de datos
 tests/integration/   pruebas con PostgreSQL real
 tests/load/k6-load.js prueba de carga oficial (k6)
@@ -139,8 +141,8 @@ Los scripts de destrucción listan al final lo que pudiera seguir cobrando.
 4. Mostrar la imagen nueva en ECR.
 5. Mostrar el despliegue automático en Kubernetes.
 6. Abrir la app y comprobar `/api/v1/version`.
-7. Lanzar `k6 run -e BASE_URL=http://<balanceador> tests/load/k6-load.js`.
-8. Mostrar el HPA (`scripts/demo-hpa.sh`) y el dashboard de Grafana.
+7. Ejecutar `python3 scripts/demo-ui/server.py`, abrir <http://localhost:8099> y usar **Lanzar rampa** para enviar k6 a AWS mientras se muestra el HPA en vivo (guía: [`docs/DEMO-UI.md`](docs/DEMO-UI.md)).
+8. Mostrar las métricas históricas en Grafana: [`docs/RUNBOOK-AWS.md`](docs/RUNBOOK-AWS.md#4-desplegar).
 9. Explicar cómo se aprovisiona y cómo se reproduce (`aws-up.sh`, `aws-down.sh`).
 
 La spec pide **evidencia real de ejecución**, no solo capturas de código.
